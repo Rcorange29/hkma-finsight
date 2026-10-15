@@ -39,6 +39,24 @@ def _error_detail(exc: Exception) -> str:
     return f"Unexpected error: {exc}"
 
 
+def _md(text: str) -> str:
+    """Escape $ so Streamlit doesn't render the text between two of them as LaTeX.
+
+    Filings and answers are full of dollar amounts; unescaped, a passage like
+    "$6.8 billion, $5.2 billion" turns into a garbled math span.
+    """
+    return text.replace("$", "\\$")
+
+
+def _render_sources(sources: list[dict], expanded: bool) -> None:
+    with st.expander("Source citations", expanded=expanded):
+        for src in sources:
+            st.markdown(
+                f"**{src['source_file']}** — Page {src['page']}\n\n"
+                f"> {_md(src['excerpt'])}"
+            )
+
+
 # Sidebar: upload filings and show what is already indexed
 with st.sidebar:
     st.header("Documents")
@@ -84,21 +102,16 @@ if "messages" not in st.session_state:
 # Render existing chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        st.markdown(_md(msg["content"]))
         if msg["role"] == "assistant" and msg.get("sources"):
-            with st.expander("Source citations", expanded=False):
-                for src in msg["sources"]:
-                    st.markdown(
-                        f"**{src['source_file']}** — Page {src['page']}\n\n"
-                        f"> {src['excerpt']}"
-                    )
+            _render_sources(msg["sources"], expanded=False)
 
 # Chat input
 if question := st.chat_input("Ask a question about the financial reports …"):
     # Display user message
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
-        st.markdown(question)
+        st.markdown(_md(question))
 
     # Call the API
     with st.chat_message("assistant"):
@@ -127,15 +140,10 @@ if question := st.chat_input("Ask a question about the financial reports …"):
                 answer = f"Unexpected error: {exc}"
                 sources = []
 
-        st.markdown(answer)
+        st.markdown(_md(answer))
 
         if sources:
-            with st.expander("Source citations", expanded=True):
-                for src in sources:
-                    st.markdown(
-                        f"**{src['source_file']}** — Page {src['page']}\n\n"
-                        f"> {src['excerpt']}"
-                    )
+            _render_sources(sources, expanded=True)
 
     # Persist assistant message
     st.session_state.messages.append(
