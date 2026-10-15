@@ -23,7 +23,7 @@ RUN pip install -r requirements.txt
 # Keep the model name in sync with RERANKER_MODEL in rag.py.
 RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
-COPY api.py app.py ingest.py rag.py evaluate.py ./
+COPY api.py app.py ingest.py rag.py financials.py analysis.py router.py evaluate.py ./
 
 # Run as a non-root user. /app/chroma_db is the volume mount point and must
 # exist with the right owner before the volume is attached.

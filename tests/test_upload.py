@@ -109,7 +109,8 @@ def test_upload_ingests_under_the_original_name_into_the_users_dir(
     resp = _upload(client)
 
     assert resp.status_code == 201
-    assert resp.json() == {"source_file": "acme-10k.pdf", "chunks": 42, "shared": False}
+    assert resp.json() == {"source_file": "acme-10k.pdf", "chunks": 42, "figures": 0,
+                           "shared": False}
     # The name ingest sees is the one citations will show
     assert seen == {"name": "acme-10k.pdf", "owner": ALICE, "bytes": PDF_BYTES}
     user_dir = data_dir / "users" / ALICE
@@ -169,8 +170,8 @@ def test_list_documents_shows_own_files_and_shared_samples(client, monkeypatch):
     resp = client.get("/documents", headers={"X-User-Id": ALICE})
     assert resp.json() == {
         "documents": [
-            {"source_file": "mine.pdf", "chunks": 3, "shared": False},
-            {"source_file": "msft.pdf", "chunks": 7, "shared": True},
+            {"source_file": "mine.pdf", "chunks": 3, "figures": 0, "shared": False},
+            {"source_file": "msft.pdf", "chunks": 7, "figures": 0, "shared": True},
         ]
     }
 
