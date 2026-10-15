@@ -57,8 +57,8 @@ requires a `(file.pdf, p.NN)` citation after each claim. Anything missing comes 
 | --- | --- |
 | `ingest.py` | Loads PDFs from `data/`, chunks them (1024 tokens / 128 overlap, table-aware), embeds and persists to ChromaDB. |
 | `rag.py` | Retrieval, score-threshold filtering, cross-encoder reranking, prompting. Exposes `query()`. |
-| `api.py` | FastAPI service — `POST /query`, `GET /health`. |
-| `app.py` | Streamlit chat UI with expandable source citations. |
+| `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `GET /documents`, `GET /health`. |
+| `app.py` | Streamlit chat UI with expandable source citations and a sidebar for uploading PDFs. |
 | `evaluate.py` | RAGAs evaluation (faithfulness, answer relevancy) with a before/after comparison table. |
 | `start.py` | One-command boot: checks config, ingests if needed, starts both servers, opens the browser. |
 
@@ -84,10 +84,11 @@ pip install -r requirements.txt
 cp .env.example .env               # then edit .env and set your real key
 ```
 
-Add at least one 10-K PDF to `data/`. Filings are free from the SEC:
+Get a 10-K PDF. Filings are free from the SEC:
 [EDGAR full-text search](https://efts.sec.gov/LATEST/search-index?q=10-K) — pick a
 company, open its 10-K, and save the PDF. The examples below use Microsoft's, saved as
-`data/microsoft-sec-10k.pdf`.
+`microsoft-sec-10k.pdf`. Either drop it into `data/` before booting, or upload it from
+the UI sidebar once the app is running.
 
 Then boot everything with one command:
 
@@ -95,9 +96,17 @@ Then boot everything with one command:
 python start.py                    # add --reingest to rebuild the vector store
 ```
 
-This verifies your `.env`, ingests the PDFs if `chroma_db/` is missing, starts the API on
+This verifies your `.env`, ingests any PDFs in `data/` if `chroma_db/` is missing, starts the API on
 `:8000` and the UI on `:8501`, and opens the browser once both are ready. `Ctrl-C` stops
 both.
+
+### Uploading your own filings
+
+Use **Upload and index** in the UI sidebar (several PDFs at once is fine), or call the API
+directly. Each upload is chunked and embedded immediately, saved to `data/`, and becomes
+queryable as soon as the request returns; the sidebar lists every indexed filing.
+Uploading a file with the same name as one already indexed **replaces** it rather than
+duplicating its passages. Scanned PDFs without a text layer are rejected — run OCR first.
 
 ### Running the pieces individually
 
@@ -122,8 +131,9 @@ docker compose up                  # API on :8000, UI on :8501
 
 One image serves all three roles — API, UI, and the ingest job — selected by the compose
 `command`. The vector store lives in the named volume `chroma-data`, so it survives
-rebuilds and restarts; re-run the ingest job to rebuild it after changing chunking. PDFs
-are bind-mounted read-only from `./data` into the ingest container.
+rebuilds and restarts; re-run the ingest job to rebuild it after changing chunking. `./data`
+is bind-mounted into the API (writable, so UI uploads land there) and the ingest job
+(read-only), so re-running ingest rebuilds the store from both your own and uploaded PDFs.
 
 Details worth knowing:
 
@@ -133,7 +143,7 @@ Details worth knowing:
   download happens at runtime — the running containers only need network access to
   OpenAI.
 - The UI reaches the API at `http://api:8000` via the compose network; `app.py` reads
-  this from the `API_URL` environment variable and falls back to `localhost` outside
+  this from the `API_BASE_URL` environment variable and falls back to `localhost` outside
   Docker.
 - Containers run as a non-root user, and the API exposes a `/health` healthcheck that
   gates UI startup.
@@ -163,8 +173,24 @@ curl -X POST http://localhost:8000/query \
 }
 ```
 
-Status codes: `422` empty question · `503` vector store missing (run `ingest.py`) ·
-`500` inference error. `GET /health` returns `{"status": "ok"}`.
+Status codes: `422` empty question · `503` vector store missing (run `ingest.py` or
+upload a PDF) · `500` inference error. `GET /health` returns `{"status": "ok"}`.
+
+`POST /documents` — upload a PDF (multipart field `file`, max 50 MB)
+
+```bash
+curl -X POST http://localhost:8000/documents -F "file=@microsoft-sec-10k.pdf"
+```
+
+```json
+{"source_file": "microsoft-sec-10k.pdf", "chunks": 155}
+```
+
+The filename is reduced to a safe basename (`[A-Za-z0-9._-]`), which is what citations
+show. Status codes: `201` indexed · `413` too large · `415` not a PDF · `422` no
+extractable text or unreadable PDF · `500` ingestion error.
+
+`GET /documents` lists indexed files: `{"documents": [{"source_file": "…", "chunks": 155}]}`.
 
 ---
 
@@ -239,13 +265,18 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Tests cover the pure chunking logic and need no API key or network access.
+Tests cover the chunking logic, prompt formatting, and the upload path (validation,
+staging, and replace-on-reupload against a temporary ChromaDB with fake embeddings).
+None need an API key or network access.
 
 ---
 
 ## Notes and limitations
 
 - Costs money: ingestion embeds every chunk, and each query calls `gpt-4o-mini`.
+- The API has no authentication. Anyone who can reach port 8000 can upload files (and
+  spend your OpenAI credits embedding them), so don't expose it beyond localhost or a
+  trusted network as-is.
 - The vector store (`chroma_db/`) and source PDFs are gitignored — both are rebuilt
   locally from your own filings.
 - The reranker downloads a ~90 MB model from Hugging Face on first use.

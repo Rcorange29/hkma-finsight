@@ -1,6 +1,9 @@
 """
 ingest.py — Load 10-K PDFs from ./data, chunk them, embed with OpenAI,
-and persist to ChromaDB.
+and persist to ChromaDB. Re-running is idempotent: each file's chunks
+replace any previously ingested from a file of the same name.
+
+api.py reuses ingest_file() to add user-uploaded PDFs one at a time.
 
 Chunking strategy:
   - Token-aware splitting via tiktoken (cl100k_base), 1024 tokens / 128 overlap.
@@ -103,20 +106,12 @@ def _restore_table_blocks(chunks: list) -> list:
 # Core pipeline
 # ---------------------------------------------------------------------------
 
-def load_pdfs(data_dir: Path) -> list:
-    docs = []
-    pdf_files = list(data_dir.glob("*.pdf"))
-    if not pdf_files:
-        raise FileNotFoundError(f"No PDF files found in {data_dir.resolve()}")
-    for pdf_path in pdf_files:
-        print(f"Loading {pdf_path.name} ...")
-        loader = PyPDFLoader(str(pdf_path))
-        pages = loader.load()
-        for page in pages:
-            page.metadata["source_file"] = pdf_path.name
-        docs.extend(pages)
-    print(f"Loaded {len(docs)} pages from {len(pdf_files)} PDF(s).")
-    return docs
+def load_pdf(pdf_path: Path) -> list:
+    print(f"Loading {pdf_path.name} ...")
+    pages = PyPDFLoader(str(pdf_path)).load()
+    for page in pages:
+        page.metadata["source_file"] = pdf_path.name
+    return pages
 
 
 def split_documents(docs: list) -> list:
@@ -134,21 +129,53 @@ def split_documents(docs: list) -> list:
 
     # Restore placeholder newlines inside table blocks
     chunks = _restore_table_blocks(chunks)
-    print(f"Split into {len(chunks)} chunks (1024 tok / 128 overlap, table-aware).")
     return chunks
 
 
-def build_vectorstore(chunks: list) -> Chroma:
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    print("Embedding chunks and storing in ChromaDB …")
-    vectorstore = Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings,
+def open_vectorstore() -> Chroma:
+    """Open the persisted store, creating it on first write if it doesn't exist."""
+    return Chroma(
         persist_directory=str(CHROMA_DIR),
+        embedding_function=OpenAIEmbeddings(model="text-embedding-3-small"),
         collection_name=COLLECTION_NAME,
     )
-    print(f"Vectorstore persisted to {CHROMA_DIR.resolve()}")
-    return vectorstore
+
+
+def ingest_file(pdf_path: Path) -> int:
+    """
+    Chunk and embed one PDF into the store, returning the number of chunks added.
+
+    Chunks previously ingested from a file with the same name are deleted first,
+    so re-ingesting (or re-uploading) a filing replaces it instead of duplicating
+    every passage in retrieval results.
+    """
+    docs = load_pdf(pdf_path)
+    if not any(doc.page_content.strip() for doc in docs):
+        raise ValueError(
+            f"{pdf_path.name} has no extractable text (scanned PDFs need OCR first)."
+        )
+    chunks = split_documents(docs)
+
+    vectorstore = open_vectorstore()
+    stale = vectorstore.get(where={"source_file": pdf_path.name}, include=[])["ids"]
+    if stale:
+        print(f"Replacing {len(stale)} existing chunks from {pdf_path.name}.")
+        vectorstore.delete(ids=stale)
+    print(f"Embedding {len(chunks)} chunks from {pdf_path.name} …")
+    vectorstore.add_documents(chunks)
+    return len(chunks)
+
+
+def list_documents() -> dict[str, int]:
+    """Map each ingested source file to its chunk count."""
+    if not CHROMA_DIR.exists():
+        return {}
+    metadatas = open_vectorstore().get(include=["metadatas"])["metadatas"]
+    counts: dict[str, int] = {}
+    for meta in metadatas:
+        name = meta.get("source_file", "unknown")
+        counts[name] = counts.get(name, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def main():
@@ -157,9 +184,12 @@ def main():
         print(f"Created {DATA_DIR.resolve()} — place your 10-K PDF files there and re-run.")
         return
 
-    docs = load_pdfs(DATA_DIR)
-    chunks = split_documents(docs)
-    build_vectorstore(chunks)
+    pdf_files = sorted(DATA_DIR.glob("*.pdf"))
+    if not pdf_files:
+        raise FileNotFoundError(f"No PDF files found in {DATA_DIR.resolve()}")
+    for pdf_path in pdf_files:
+        ingest_file(pdf_path)
+    print(f"Vectorstore persisted to {CHROMA_DIR.resolve()}")
     print("Ingestion complete.")
 
 

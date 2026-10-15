@@ -90,14 +90,13 @@ def check_env() -> None:
     _print(".env OK.")
 
 
-def check_data() -> None:
+def check_data() -> bool:
     pdfs = list(DATA_DIR.glob("*.pdf")) if DATA_DIR.exists() else []
     if not pdfs:
-        _abort(
-            f"No PDF files found in {DATA_DIR}.\n"
-            "  Add your 10-K PDF files there and re-run."
-        )
+        _print(f"No PDF files in {DATA_DIR} — upload filings from the UI sidebar.")
+        return False
     _print(f"Found {len(pdfs)} PDF(s): {', '.join(p.name for p in pdfs)}")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -158,10 +157,12 @@ def main() -> None:
     _print("=== Financial Report Q&A Engine — startup ===")
 
     check_env()
-    check_data()
+    has_pdfs = check_data()
 
     # Ingestion
-    if args.reingest:
+    if not has_pdfs:
+        _print("Skipping ingestion.")
+    elif args.reingest:
         if CHROMA_DIR.exists():
             _print("--reingest: removing existing chroma_db …")
             shutil.rmtree(CHROMA_DIR)
