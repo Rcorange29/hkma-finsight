@@ -1,7 +1,11 @@
 """
 ingest.py — Load 10-K PDFs from ./data, chunk them, embed with OpenAI,
 and persist to ChromaDB. Re-running is idempotent: each file's chunks
-replace any previously ingested from a file of the same name.
+replace any previously ingested from a file of the same name and owner.
+
+Every chunk carries an `owner`:
+  - data/*.pdf               owner "public": sample filings every user can query
+  - data/users/<id>/*.pdf    owner <id>: one user's private uploads
 
 api.py reuses ingest_file() to add user-uploaded PDFs one at a time.
 
@@ -26,6 +30,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 load_dotenv()
 
 DATA_DIR = Path("data")
+USERS_DIR = DATA_DIR / "users"
+PUBLIC_OWNER = "public"
 CHROMA_DIR = Path("chroma_db")
 COLLECTION_NAME = "financial_reports"
 
@@ -106,11 +112,12 @@ def _restore_table_blocks(chunks: list) -> list:
 # Core pipeline
 # ---------------------------------------------------------------------------
 
-def load_pdf(pdf_path: Path) -> list:
+def load_pdf(pdf_path: Path, owner: str) -> list:
     print(f"Loading {pdf_path.name} ...")
     pages = PyPDFLoader(str(pdf_path)).load()
     for page in pages:
         page.metadata["source_file"] = pdf_path.name
+        page.metadata["owner"] = owner
     return pages
 
 
@@ -141,15 +148,16 @@ def open_vectorstore() -> Chroma:
     )
 
 
-def ingest_file(pdf_path: Path) -> int:
+def ingest_file(pdf_path: Path, owner: str = PUBLIC_OWNER) -> int:
     """
     Chunk and embed one PDF into the store, returning the number of chunks added.
 
-    Chunks previously ingested from a file with the same name are deleted first,
-    so re-ingesting (or re-uploading) a filing replaces it instead of duplicating
-    every passage in retrieval results.
+    Chunks previously ingested from a file with the same name and owner are
+    deleted first, so re-ingesting (or re-uploading) a filing replaces it instead
+    of duplicating every passage in retrieval results. Other owners' files of the
+    same name are untouched.
     """
-    docs = load_pdf(pdf_path)
+    docs = load_pdf(pdf_path, owner)
     if not any(doc.page_content.strip() for doc in docs):
         raise ValueError(
             f"{pdf_path.name} has no extractable text (scanned PDFs need OCR first)."
@@ -157,7 +165,9 @@ def ingest_file(pdf_path: Path) -> int:
     chunks = split_documents(docs)
 
     vectorstore = open_vectorstore()
-    stale = vectorstore.get(where={"source_file": pdf_path.name}, include=[])["ids"]
+    stale = vectorstore.get(
+        where={"$and": [{"source_file": pdf_path.name}, {"owner": owner}]}, include=[]
+    )["ids"]
     if stale:
         print(f"Replacing {len(stale)} existing chunks from {pdf_path.name}.")
         vectorstore.delete(ids=stale)
@@ -166,11 +176,13 @@ def ingest_file(pdf_path: Path) -> int:
     return len(chunks)
 
 
-def list_documents() -> dict[str, int]:
-    """Map each ingested source file to its chunk count."""
+def list_documents(owner: str) -> dict[str, int]:
+    """Map each source file the owner has ingested to its chunk count."""
     if not CHROMA_DIR.exists():
         return {}
-    metadatas = open_vectorstore().get(include=["metadatas"])["metadatas"]
+    metadatas = open_vectorstore().get(where={"owner": owner}, include=["metadatas"])[
+        "metadatas"
+    ]
     counts: dict[str, int] = {}
     for meta in metadatas:
         name = meta.get("source_file", "unknown")
@@ -184,11 +196,16 @@ def main():
         print(f"Created {DATA_DIR.resolve()} — place your 10-K PDF files there and re-run.")
         return
 
-    pdf_files = sorted(DATA_DIR.glob("*.pdf"))
-    if not pdf_files:
+    # Public sample filings, then each user's uploads under their own owner, so
+    # rebuilding the store from scratch restores everything with its access.
+    jobs = [(p, PUBLIC_OWNER) for p in sorted(DATA_DIR.glob("*.pdf"))]
+    if USERS_DIR.exists():
+        for user_dir in sorted(p for p in USERS_DIR.iterdir() if p.is_dir()):
+            jobs += [(p, user_dir.name) for p in sorted(user_dir.glob("*.pdf"))]
+    if not jobs:
         raise FileNotFoundError(f"No PDF files found in {DATA_DIR.resolve()}")
-    for pdf_path in pdf_files:
-        ingest_file(pdf_path)
+    for pdf_path, owner in jobs:
+        ingest_file(pdf_path, owner)
     print(f"Vectorstore persisted to {CHROMA_DIR.resolve()}")
     print("Ingestion complete.")
 

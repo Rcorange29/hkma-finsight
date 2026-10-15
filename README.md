@@ -98,15 +98,35 @@ python start.py                    # add --reingest to rebuild the vector store
 
 This verifies your `.env`, ingests any PDFs in `data/` if `chroma_db/` is missing, starts the API on
 `:8000` and the UI on `:8501`, and opens the browser once both are ready. `Ctrl-C` stops
-both.
+both. Without login configured (next section) it runs in **local mode**: no sign-in, and
+everything belongs to a single "local" user.
+
+### Sign-in and per-user data
+
+Each user signs in and sees only their own uploads, plus **sample filings** that every
+user can query. PDFs placed directly in `data/` are samples; uploads go to
+`data/users/<user-id>/` and are visible only to the user who uploaded them.
+
+Login uses Streamlit's built-in OIDC support (`st.login`) with an
+[Amazon Cognito](https://aws.amazon.com/cognito/) user pool, whose hosted page handles
+sign-up, email verification and password reset (free up to 10,000 monthly users). To
+enable it, create a user pool with an app client that has a client secret, the
+authorization-code flow, the `openid email profile` scopes, and your callback URL
+(`http://localhost:8501/oauth2callback` locally). Then copy
+`.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill it in. That file
+is gitignored and never copied into the Docker image.
+
+The app fails closed: if `secrets.toml` has no `[auth]` section, it refuses to start
+unless `AUTH_DISABLED=1` is set, which `start.py` does for you in local mode.
 
 ### Uploading your own filings
 
 Use **Upload and index** in the UI sidebar (several PDFs at once is fine), or call the API
-directly. Each upload is chunked and embedded immediately, saved to `data/`, and becomes
-queryable as soon as the request returns; the sidebar lists every indexed filing.
-Uploading a file with the same name as one already indexed **replaces** it rather than
-duplicating its passages. Scanned PDFs without a text layer are rejected — run OCR first.
+directly. Each upload is chunked and embedded immediately, saved to your folder under
+`data/users/`, and becomes queryable as soon as the request returns; the sidebar lists
+your filings and the shared samples. Uploading a file with the same name as one of your
+own **replaces** it rather than duplicating its passages; other users' files are never
+affected. Scanned PDFs without a text layer are rejected — run OCR first.
 
 ### Running the pieces individually
 
@@ -126,8 +146,15 @@ Requires Docker with the Compose plugin, and a `.env` file with your `OPENAI_API
 
 ```bash
 docker compose run --rm ingest     # one-off: embed data/*.pdf into the store
-docker compose up                  # API on :8000, UI on :8501
+docker compose up                  # app on http://localhost via the Caddy proxy
 ```
+
+Only the **Caddy** proxy is reachable from outside the host (ports 80/443). Set
+`SITE_ADDRESS` in `.env` to a public hostname and Caddy gets an HTTPS certificate for it
+automatically. No domain? A free hostname such as `3-106-84-6.sslip.io` (your server's IP
+with dashes) resolves to that IP and works too. The API and UI are published on
+`127.0.0.1` only, for local debugging. Login config is mounted read-only from
+`./.streamlit`; for local Docker runs without Cognito, set `AUTH_DISABLED=1` in `.env`.
 
 One image serves all three roles — API, UI, and the ingest job — selected by the compose
 `command`. The vector store lives in the named volume `chroma-data`, so it survives
@@ -152,10 +179,16 @@ Details worth knowing:
 
 ## API
 
-`POST /query`
+Every endpoint except `/health` requires an `X-User-Id` header naming the user
+(`[A-Za-z0-9-]`, up to 64 characters); requests without one get `401`. The API trusts this
+header without verifying a token, because only the Streamlit UI can reach it. **Never
+expose port 8000 to the internet**: anyone who could reach it could act as any user.
+
+`POST /query`: searches the caller's filings and the shared samples
 
 ```bash
 curl -X POST http://localhost:8000/query \
+  -H "X-User-Id: local" \
   -H "Content-Type: application/json" \
   -d '{"question": "What was total revenue for fiscal 2024?"}'
 ```
@@ -179,18 +212,19 @@ upload a PDF) · `500` inference error. `GET /health` returns `{"status": "ok"}`
 `POST /documents` — upload a PDF (multipart field `file`, max 50 MB)
 
 ```bash
-curl -X POST http://localhost:8000/documents -F "file=@microsoft-sec-10k.pdf"
+curl -X POST http://localhost:8000/documents -H "X-User-Id: local" -F "file=@microsoft-sec-10k.pdf"
 ```
 
 ```json
-{"source_file": "microsoft-sec-10k.pdf", "chunks": 155}
+{"source_file": "microsoft-sec-10k.pdf", "chunks": 155, "shared": false}
 ```
 
 The filename is reduced to a safe basename (`[A-Za-z0-9._-]`), which is what citations
 show. Status codes: `201` indexed · `413` too large · `415` not a PDF · `422` no
 extractable text or unreadable PDF · `500` ingestion error.
 
-`GET /documents` lists indexed files: `{"documents": [{"source_file": "…", "chunks": 155}]}`.
+`GET /documents` lists the caller's files and the shared samples (`"shared": true`):
+`{"documents": [{"source_file": "…", "chunks": 155, "shared": false}]}`.
 
 ---
 
@@ -265,18 +299,22 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Tests cover the chunking logic, prompt formatting, and the upload path (validation,
-staging, and replace-on-reupload against a temporary ChromaDB with fake embeddings).
-None need an API key or network access.
+Tests cover the chunking logic, prompt formatting, the upload path (validation, staging,
+replace-on-reupload), and per-user isolation: user-id validation, and retrieval against a
+temporary ChromaDB (fake embeddings and reranker) that never returns another user's
+chunks. None need an API key or network access.
 
 ---
 
 ## Notes and limitations
 
 - Costs money: ingestion embeds every chunk, and each query calls `gpt-4o-mini`.
-- The API has no authentication. Anyone who can reach port 8000 can upload files (and
-  spend your OpenAI credits embedding them), so don't expose it beyond localhost or a
-  trusted network as-is.
+- Signed-in users can upload and query without limits yet, and each upload and question
+  spends your OpenAI credits. Set a monthly spending cap in your OpenAI account before
+  sharing the app widely.
+- Cognito's built-in email sender only allows a limited number of emails per day
+  (sign-up codes and password resets). That's fine for a demo; connect Amazon SES for
+  more.
 - The vector store (`chroma_db/`) and source PDFs are gitignored — both are rebuilt
   locally from your own filings.
 - The reranker downloads a ~90 MB model from Hugging Face on first use.

@@ -1,9 +1,14 @@
 # Financial Report Q&A Engine
 #
 #   docker compose run --rm ingest   # one-off: embed data/*.pdf into the store
-#   docker compose up                # API on :8000, UI on :8501
+#   docker compose up                # app on http://localhost (via Caddy)
 #
-# PDFs uploaded through the UI are saved to ./data and indexed on the spot.
+# PDFs uploaded through the UI are saved to ./data/users/<id>/ and indexed on
+# the spot; PDFs placed directly in ./data are public samples every user sees.
+#
+# Caddy is the only service reachable from outside the host. Set SITE_ADDRESS
+# in .env to a public hostname (e.g. 3-106-84-6.sslip.io) and Caddy obtains an
+# HTTPS certificate for it automatically; unset, it serves plain HTTP on :80.
 #
 # The vector store lives in the named volume `chroma-data`, so it survives
 # rebuilds and restarts. Re-run the ingest job after changing chunking.
@@ -13,7 +18,9 @@ services:
     build: .
     env_file: .env                     # OPENAI_API_KEY
     ports:
-      - "8000:8000"
+      # Loopback only: the API trusts the X-User-Id header, so it must never
+      # be reachable from outside. Published here just for local debugging.
+      - "127.0.0.1:8000:8000"
     volumes:
       - chroma-data:/app/chroma_db
       # Writable: uploads are saved here, so the ingest job can rebuild from them
@@ -32,11 +39,29 @@ services:
       # Inside the compose network the API is reachable by service name,
       # not localhost. app.py reads this; defaults to localhost outside Docker.
       API_BASE_URL: http://api:8000
+      # 1 = no login, everyone is the single "local" user. Never on a public host.
+      AUTH_DISABLED: ${AUTH_DISABLED:-0}
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
+    volumes:
+      # Login config (Cognito client secret, cookie secret) - kept out of the image
+      - ./.streamlit:/app/.streamlit:ro
     depends_on:
       api:
         condition: service_healthy
+
+  proxy:
+    image: caddy:2.10.0
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data               # certificates; keep them across restarts
+    depends_on:
+      - ui
 
   # One-shot job, excluded from `docker compose up` by its profile.
   # PDFs are bind-mounted read-only from ./data on the host.
@@ -51,3 +76,4 @@ services:
 
 volumes:
   chroma-data:
+  caddy-data:

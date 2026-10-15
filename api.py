@@ -1,9 +1,13 @@
 """
 api.py — FastAPI server for the RAG engine.
 
-  POST /query       ask a question
-  POST /documents   upload a PDF; it is saved to data/ and ingested immediately
-  GET  /documents   list ingested files and their chunk counts
+  POST /query       ask a question about your filings and the public samples
+  POST /documents   upload a PDF; it is saved under data/users/<id>/ and ingested
+  GET  /documents   list your filings and the public samples
+
+Every request except /health carries an X-User-Id header naming the signed-in
+user. The API trusts it without checking a token, because only the Streamlit
+UI can reach this service: it must never be exposed to the internet directly.
 
 Usage:
     uvicorn api:app --reload --port 8000
@@ -16,7 +20,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
 from pydantic import BaseModel
 from pypdf.errors import PdfReadError
 
@@ -24,6 +28,10 @@ import ingest
 import rag
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # a 10-K PDF is typically 1-10 MB
+
+# Cognito subs are UUIDs; "local" is the single user when login is disabled.
+# The id becomes a directory name, so anything else is rejected outright.
+_OWNER_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
 
 # Serialises store writes: two uploads of the same filename must not interleave
 # their delete-then-add, or both sets of chunks survive.
@@ -54,6 +62,7 @@ class QueryResponse(BaseModel):
 class DocumentInfo(BaseModel):
     source_file: str
     chunks: int
+    shared: bool = False   # True for public sample filings every user sees
 
 
 class DocumentList(BaseModel):
@@ -75,17 +84,27 @@ def safe_pdf_name(filename: str | None) -> str:
     return name
 
 
+def current_owner(x_user_id: str | None = Header(default=None)) -> str:
+    if (
+        not x_user_id
+        or not _OWNER_RE.fullmatch(x_user_id)
+        or x_user_id == ingest.PUBLIC_OWNER
+    ):
+        raise HTTPException(status_code=401, detail="Missing or invalid user id.")
+    return x_user_id
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
 @app.post("/query", response_model=QueryResponse)
-def query_endpoint(request: QueryRequest):
+def query_endpoint(request: QueryRequest, owner: str = Depends(current_owner)):
     if not request.question.strip():
         raise HTTPException(status_code=422, detail="Question must not be empty.")
     try:
-        result = rag.query(request.question)
+        result = rag.query(request.question, owner)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -98,15 +117,17 @@ def query_endpoint(request: QueryRequest):
 
 
 @app.get("/documents", response_model=DocumentList)
-def list_documents():
-    docs = ingest.list_documents()
+def list_documents(owner: str = Depends(current_owner)):
+    own = ingest.list_documents(owner)
+    shared = ingest.list_documents(ingest.PUBLIC_OWNER)
     return DocumentList(
-        documents=[DocumentInfo(source_file=n, chunks=c) for n, c in docs.items()]
+        documents=[DocumentInfo(source_file=n, chunks=c) for n, c in own.items()]
+        + [DocumentInfo(source_file=n, chunks=c, shared=True) for n, c in shared.items()]
     )
 
 
 @app.post("/documents", response_model=DocumentInfo, status_code=201)
-def upload_document(file: UploadFile):
+def upload_document(file: UploadFile, owner: str = Depends(current_owner)):
     name = safe_pdf_name(file.filename)
     data = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
@@ -117,19 +138,20 @@ def upload_document(file: UploadFile):
     if not data.startswith(b"%PDF-"):
         raise HTTPException(status_code=415, detail="File is not a valid PDF.")
 
-    ingest.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    # Stage inside data/ (same filesystem, so the final move is an atomic
-    # replace) under the real name, which ingest records as source_file for
-    # citations. The glob in ingest.main() is non-recursive, so it never sees
-    # the staging dir. A file only lands in data/ once it ingests, so a failed
-    # upload can't break a later `python ingest.py` run.
-    with tempfile.TemporaryDirectory(dir=ingest.DATA_DIR) as staging:
+    user_dir = ingest.USERS_DIR / owner
+    user_dir.mkdir(parents=True, exist_ok=True)
+    # Stage inside the user's dir (same filesystem, so the final move is an
+    # atomic replace) under the real name, which ingest records as source_file
+    # for citations. The globs in ingest.main() are non-recursive, so they never
+    # see the staging dir. A file only lands in data/ once it ingests, so a
+    # failed upload can't break a later `python ingest.py` run.
+    with tempfile.TemporaryDirectory(dir=user_dir) as staging:
         staged = Path(staging) / name
         staged.write_bytes(data)
         try:
             with _ingest_lock:
-                chunks = ingest.ingest_file(staged)
-                staged.replace(ingest.DATA_DIR / name)
+                chunks = ingest.ingest_file(staged, owner)
+                staged.replace(user_dir / name)
         except (ValueError, PdfReadError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:

@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import signal
 import socket
@@ -125,8 +126,20 @@ def start_api() -> subprocess.Popen:
     return proc
 
 
+def login_configured() -> bool:
+    secrets = ROOT / ".streamlit" / "secrets.toml"
+    if not secrets.exists():
+        return False
+    # A plain line check rather than tomllib, which needs Python 3.11+
+    return any(line.strip() == "[auth]" for line in secrets.read_text().splitlines())
+
+
 def start_streamlit() -> subprocess.Popen:
     _print(f"Starting Streamlit on port {UI_PORT} …")
+    env = os.environ.copy()
+    if not login_configured():
+        _print("No [auth] in .streamlit/secrets.toml — running without login (local mode).")
+        env["AUTH_DISABLED"] = "1"
     proc = subprocess.Popen(
         [
             PYTHON, "-m", "streamlit", "run",
@@ -136,6 +149,7 @@ def start_streamlit() -> subprocess.Popen:
             "--browser.gatherUsageStats", "false",
         ],
         cwd=ROOT,
+        env=env,
         stdin=subprocess.DEVNULL,
     )
     return proc

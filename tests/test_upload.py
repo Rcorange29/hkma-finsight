@@ -1,7 +1,9 @@
-"""Tests for PDF upload: the /documents endpoints and per-file ingestion.
+"""Tests for PDF upload and per-user isolation.
 
-No API key or network needed: the endpoint tests stub out ingest_file, and the
-ingestion tests run against a real ChromaDB in a temp dir with fake embeddings.
+Covers the /documents and /query endpoints, per-file ingestion, and retrieval
+filtering. No API key or network needed: the endpoint tests stub out ingestion
+and querying, and the store tests run against a real ChromaDB in a temp dir
+with fake embeddings and a fake reranker.
 """
 
 import pytest
@@ -12,14 +14,18 @@ from langchain_core.embeddings import DeterministicFakeEmbedding
 
 import api
 import ingest
+import rag
 
 PDF_BYTES = b"%PDF-1.7\n fake body"
+ALICE = "0f8b1c2e-alice"
+BOB = "7d3a9e41-bob"
 
 
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
     d = tmp_path / "data"
     monkeypatch.setattr(ingest, "DATA_DIR", d)
+    monkeypatch.setattr(ingest, "USERS_DIR", d / "users")
     return d
 
 
@@ -28,8 +34,12 @@ def client():
     return TestClient(api.app)
 
 
-def _upload(client, name="acme-10k.pdf", body=PDF_BYTES):
-    return client.post("/documents", files={"file": (name, body, "application/pdf")})
+def _upload(client, name="acme-10k.pdf", body=PDF_BYTES, owner=ALICE):
+    return client.post(
+        "/documents",
+        files={"file": (name, body, "application/pdf")},
+        headers={"X-User-Id": owner},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -57,43 +67,79 @@ def test_safe_pdf_name_rejects_non_pdf_names(raw):
 
 
 # ---------------------------------------------------------------------------
+# User id header
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("header", [None, "", "../../etc", "a/b", "public", "x" * 65])
+def test_requests_without_a_valid_user_id_are_rejected(client, header):
+    headers = {} if header is None else {"X-User-Id": header}
+    assert client.get("/documents", headers=headers).status_code == 401
+    assert (
+        client.post("/query", json={"question": "q"}, headers=headers).status_code == 401
+    )
+
+
+def test_query_is_scoped_to_the_caller(client, monkeypatch):
+    seen = {}
+
+    def fake_query(question, owner):
+        seen["owner"] = owner
+        return rag.RAGResponse(answer="ok")
+
+    monkeypatch.setattr(rag, "query", fake_query)
+    resp = client.post("/query", json={"question": "revenue?"}, headers={"X-User-Id": BOB})
+    assert resp.status_code == 200
+    assert seen == {"owner": BOB}
+
+
+# ---------------------------------------------------------------------------
 # POST /documents
 # ---------------------------------------------------------------------------
 
-def test_upload_ingests_under_the_original_name_and_saves_to_data(
+def test_upload_ingests_under_the_original_name_into_the_users_dir(
     client, data_dir, monkeypatch
 ):
     seen = {}
 
-    def fake_ingest(path):
-        seen["name"] = path.name
-        seen["bytes"] = path.read_bytes()
+    def fake_ingest(path, owner):
+        seen.update(name=path.name, owner=owner, bytes=path.read_bytes())
         return 42
 
     monkeypatch.setattr(ingest, "ingest_file", fake_ingest)
     resp = _upload(client)
 
     assert resp.status_code == 201
-    assert resp.json() == {"source_file": "acme-10k.pdf", "chunks": 42}
+    assert resp.json() == {"source_file": "acme-10k.pdf", "chunks": 42, "shared": False}
     # The name ingest sees is the one citations will show
-    assert seen == {"name": "acme-10k.pdf", "bytes": PDF_BYTES}
-    assert (data_dir / "acme-10k.pdf").read_bytes() == PDF_BYTES
-    # Staging dir is cleaned up
-    assert [p.name for p in data_dir.iterdir()] == ["acme-10k.pdf"]
+    assert seen == {"name": "acme-10k.pdf", "owner": ALICE, "bytes": PDF_BYTES}
+    user_dir = data_dir / "users" / ALICE
+    assert (user_dir / "acme-10k.pdf").read_bytes() == PDF_BYTES
+    # Staging dir is cleaned up, and nothing lands in the public data/ root
+    assert [p.name for p in user_dir.iterdir()] == ["acme-10k.pdf"]
+    assert not list(data_dir.glob("*.pdf"))
+
+
+def test_two_users_can_upload_the_same_filename(client, data_dir, monkeypatch):
+    monkeypatch.setattr(ingest, "ingest_file", lambda path, owner: 1)
+    _upload(client, body=PDF_BYTES + b" alice", owner=ALICE)
+    _upload(client, body=PDF_BYTES + b" bob", owner=BOB)
+    users = data_dir / "users"
+    assert (users / ALICE / "acme-10k.pdf").read_bytes().endswith(b" alice")
+    assert (users / BOB / "acme-10k.pdf").read_bytes().endswith(b" bob")
 
 
 def test_reupload_replaces_the_saved_file(client, data_dir, monkeypatch):
-    monkeypatch.setattr(ingest, "ingest_file", lambda path: 1)
+    monkeypatch.setattr(ingest, "ingest_file", lambda path, owner: 1)
     _upload(client, body=PDF_BYTES + b" v1")
     assert _upload(client, body=PDF_BYTES + b" v2").status_code == 201
-    assert (data_dir / "acme-10k.pdf").read_bytes() == PDF_BYTES + b" v2"
+    assert (data_dir / "users" / ALICE / "acme-10k.pdf").read_bytes() == PDF_BYTES + b" v2"
 
 
 def test_upload_rejects_non_pdf_content(client, data_dir, monkeypatch):
-    monkeypatch.setattr(ingest, "ingest_file", lambda path: pytest.fail("ingested"))
+    monkeypatch.setattr(ingest, "ingest_file", lambda *a: pytest.fail("ingested"))
     resp = _upload(client, body=b"MZ\x90\x00 not a pdf")
     assert resp.status_code == 415
-    assert not data_dir.exists() or not any(data_dir.iterdir())
+    assert not data_dir.exists()
 
 
 def test_upload_rejects_wrong_extension(client, data_dir):
@@ -105,8 +151,8 @@ def test_upload_rejects_oversized_files(client, data_dir, monkeypatch):
     assert _upload(client, body=PDF_BYTES + b"x" * 32).status_code == 413
 
 
-def test_failed_ingestion_leaves_nothing_in_data(client, data_dir, monkeypatch):
-    def no_text(path):
+def test_failed_ingestion_leaves_nothing_behind(client, data_dir, monkeypatch):
+    def no_text(path, owner):
         raise ValueError(f"{path.name} has no extractable text")
 
     monkeypatch.setattr(ingest, "ingest_file", no_text)
@@ -114,22 +160,23 @@ def test_failed_ingestion_leaves_nothing_in_data(client, data_dir, monkeypatch):
 
     assert resp.status_code == 422
     assert "no extractable text" in resp.json()["detail"]
-    assert list(data_dir.iterdir()) == []
+    assert list((data_dir / "users" / ALICE).iterdir()) == []
 
 
-def test_list_documents(client, monkeypatch):
-    monkeypatch.setattr(ingest, "list_documents", lambda: {"a.pdf": 3, "b.pdf": 7})
-    resp = client.get("/documents")
+def test_list_documents_shows_own_files_and_shared_samples(client, monkeypatch):
+    stores = {ALICE: {"mine.pdf": 3}, BOB: {"bobs.pdf": 9}, "public": {"msft.pdf": 7}}
+    monkeypatch.setattr(ingest, "list_documents", lambda owner: stores.get(owner, {}))
+    resp = client.get("/documents", headers={"X-User-Id": ALICE})
     assert resp.json() == {
         "documents": [
-            {"source_file": "a.pdf", "chunks": 3},
-            {"source_file": "b.pdf", "chunks": 7},
+            {"source_file": "mine.pdf", "chunks": 3, "shared": False},
+            {"source_file": "msft.pdf", "chunks": 7, "shared": True},
         ]
     }
 
 
 # ---------------------------------------------------------------------------
-# ingest_file against a real (temp) ChromaDB
+# Ingestion and retrieval against a real (temp) ChromaDB
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -141,32 +188,75 @@ def store(tmp_path, monkeypatch):
 
 
 def _fake_pdf(monkeypatch, pages):
-    def load(path):
+    def load(path, owner):
         return [
-            Document(page_content=text, metadata={"source_file": path.name, "page": i})
+            Document(
+                page_content=text,
+                metadata={"source_file": path.name, "owner": owner, "page": i},
+            )
             for i, text in enumerate(pages)
         ]
 
     monkeypatch.setattr(ingest, "load_pdf", load)
 
 
-def test_reingesting_a_file_replaces_its_chunks(store, tmp_path, monkeypatch):
+def test_reingesting_a_file_replaces_only_that_owners_chunks(store, tmp_path, monkeypatch):
     _fake_pdf(monkeypatch, ["page one text", "page two text"])
-    ingest.ingest_file(tmp_path / "acme.pdf")
-    ingest.ingest_file(tmp_path / "other.pdf")
-    assert ingest.list_documents() == {"acme.pdf": 2, "other.pdf": 2}
+    ingest.ingest_file(tmp_path / "acme.pdf", ALICE)
+    ingest.ingest_file(tmp_path / "acme.pdf", BOB)
+    ingest.ingest_file(tmp_path / "other.pdf", ALICE)
 
     _fake_pdf(monkeypatch, ["revised filing, one page"])
-    assert ingest.ingest_file(tmp_path / "acme.pdf") == 1
-    # acme replaced, not duplicated; other untouched
-    assert ingest.list_documents() == {"acme.pdf": 1, "other.pdf": 2}
+    assert ingest.ingest_file(tmp_path / "acme.pdf", ALICE) == 1
+    # Alice's acme replaced, not duplicated; her other file and Bob's acme untouched
+    assert ingest.list_documents(ALICE) == {"acme.pdf": 1, "other.pdf": 2}
+    assert ingest.list_documents(BOB) == {"acme.pdf": 2}
 
 
 def test_ingest_rejects_pdfs_without_text(store, tmp_path, monkeypatch):
     _fake_pdf(monkeypatch, ["", "   \n"])
     with pytest.raises(ValueError, match="no extractable text"):
-        ingest.ingest_file(tmp_path / "scan.pdf")
+        ingest.ingest_file(tmp_path / "scan.pdf", ALICE)
 
 
 def test_list_documents_is_empty_before_any_ingest(store):
-    assert ingest.list_documents() == {}
+    assert ingest.list_documents(ALICE) == {}
+
+
+class _FakeReranker:
+    def predict(self, pairs):
+        return [0.0] * len(pairs)
+
+
+@pytest.mark.filterwarnings("ignore:Relevance scores must be between 0 and 1")
+def test_retrieval_never_returns_another_users_chunks(store, tmp_path, monkeypatch):
+    monkeypatch.setattr(rag, "_get_reranker", lambda: _FakeReranker())
+    # Keep every candidate: fake embeddings give arbitrary relevance scores
+    monkeypatch.setattr(rag, "SCORE_THRESHOLD", float("-inf"))
+    monkeypatch.setattr(rag, "TOP_K", 100)
+    _fake_pdf(monkeypatch, ["revenue was 100", "net income was 20"])
+    ingest.ingest_file(tmp_path / "sample.pdf", ingest.PUBLIC_OWNER)
+    ingest.ingest_file(tmp_path / "alice.pdf", ALICE)
+    ingest.ingest_file(tmp_path / "bob.pdf", BOB)
+    vectorstore = ingest.open_vectorstore()
+
+    owners = {d.metadata["owner"] for d in rag.retrieve_and_rerank("revenue", vectorstore, ALICE)}
+    assert owners == {ALICE, ingest.PUBLIC_OWNER}
+
+    # No owner (CLI and evaluate.py only) searches everything
+    owners = {d.metadata["owner"] for d in rag.retrieve_and_rerank("revenue", vectorstore)}
+    assert owners == {ALICE, BOB, ingest.PUBLIC_OWNER}
+
+
+def test_main_ingests_public_samples_and_each_users_uploads(
+    store, data_dir, monkeypatch
+):
+    (data_dir / "users" / ALICE).mkdir(parents=True)
+    (data_dir / "sample.pdf").write_bytes(PDF_BYTES)
+    (data_dir / "users" / ALICE / "mine.pdf").write_bytes(PDF_BYTES)
+    calls = []
+    monkeypatch.setattr(ingest, "ingest_file", lambda path, owner: calls.append((path.name, owner)))
+
+    ingest.main()
+
+    assert calls == [("sample.pdf", ingest.PUBLIC_OWNER), ("mine.pdf", ALICE)]
