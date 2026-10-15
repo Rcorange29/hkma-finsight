@@ -1,0 +1,7 @@
+# Public entry point. SITE_ADDRESS comes from compose (.env): a hostname gets an
+# automatic HTTPS certificate; the default ":80" serves plain HTTP locally.
+{$SITE_ADDRESS} {
+	encode gzip
+	# Streamlit, including its websocket and file uploads
+	reverse_proxy ui:8501
+}

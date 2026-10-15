@@ -1,6 +1,7 @@
 # Secrets
 .env
 .env.local
+.streamlit/secrets.toml
 
 # Python
 __pycache__/
@@ -20,6 +21,7 @@ chroma_db/
 
 # Source corpus — add your own 10-K PDFs to data/
 data/*.pdf
+data/users/
 
 # Evaluation output
 evaluation_results.json

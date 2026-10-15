@@ -20,6 +20,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
+from ingest import PUBLIC_OWNER
+
 load_dotenv()
 
 CHROMA_DIR = Path("chroma_db")
@@ -137,15 +139,25 @@ def load_retriever():
     return _load_vectorstore().as_retriever(search_kwargs={"k": TOP_K})
 
 
-def retrieve_and_rerank(question: str, vectorstore: Chroma) -> list:
+def owner_filter(owner: str | None) -> dict | None:
+    """Restrict retrieval to the owner's own filings plus the public samples.
+
+    None searches every filing; only the CLI and evaluate.py do that.
     """
-    1. Fetch top-RETRIEVE_K chunks with relevance scores.
+    if owner is None:
+        return None
+    return {"owner": {"$in": [owner, PUBLIC_OWNER]}}
+
+
+def retrieve_and_rerank(question: str, vectorstore: Chroma, owner: str | None = None) -> list:
+    """
+    1. Fetch top-RETRIEVE_K chunks the owner may see, with relevance scores.
     2. Drop chunks below SCORE_THRESHOLD.
     3. Cross-encoder rerank, return top-TOP_K.
     """
     # Step 1 — semantic retrieval with relevance scores (0 = dissimilar, 1 = identical)
     scored = vectorstore.similarity_search_with_relevance_scores(
-        question, k=RETRIEVE_K
+        question, k=RETRIEVE_K, filter=owner_filter(owner)
     )
 
     # Step 2 — threshold filter
@@ -166,9 +178,9 @@ def retrieve_and_rerank(question: str, vectorstore: Chroma) -> list:
 # Public API
 # ---------------------------------------------------------------------------
 
-def query(question: str) -> RAGResponse:
+def query(question: str, owner: str | None = None) -> RAGResponse:
     vectorstore = _load_vectorstore()
-    top_docs = retrieve_and_rerank(question, vectorstore)
+    top_docs = retrieve_and_rerank(question, vectorstore, owner)
 
     if not top_docs:
         return RAGResponse(

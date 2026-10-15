@@ -1,12 +1,17 @@
 """
-app.py — Streamlit chat interface for the Financial Report Q&A Engine, with a
-sidebar for uploading and indexing your own 10-K PDFs.
+app.py — Streamlit chat interface for the Financial Report Q&A Engine, with
+sign-in and a sidebar for uploading and indexing your own 10-K PDFs.
 
 Usage:
     streamlit run app.py
 
 Requires the FastAPI server to be running:
     uvicorn api:app --reload --port 8000
+
+Login uses Streamlit's built-in OIDC support (st.login) against Amazon Cognito,
+configured in .streamlit/secrets.toml (see .streamlit/secrets.toml.example).
+For local development without Cognito, set AUTH_DISABLED=1 to run as a single
+"local" user; start.py does this automatically when no login is configured.
 """
 
 import os
@@ -27,6 +32,14 @@ st.title("📊 Financial Report Q&A Engine")
 st.caption("Ask questions about 10-K filings — powered by RAG + GPT-4o-mini")
 
 
+def _auth_configured() -> bool:
+    try:
+        return "auth" in st.secrets
+    except Exception:
+        # Raised when there is no secrets.toml at all
+        return False
+
+
 def _error_detail(exc: Exception) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         try:
@@ -39,8 +52,64 @@ def _error_detail(exc: Exception) -> str:
     return f"Unexpected error: {exc}"
 
 
-# Sidebar: upload filings and show what is already indexed
+def _md(text: str) -> str:
+    """Escape $ so Streamlit doesn't render the text between two of them as LaTeX.
+
+    Filings and answers are full of dollar amounts; unescaped, a passage like
+    "$6.8 billion, $5.2 billion" turns into a garbled math span.
+    """
+    return text.replace("$", "\\$")
+
+
+def _render_sources(sources: list[dict], expanded: bool) -> None:
+    with st.expander("Source citations", expanded=expanded):
+        for src in sources:
+            st.markdown(
+                f"**{src['source_file']}** — Page {src['page']}\n\n"
+                f"> {_md(src['excerpt'])}"
+            )
+
+
+# Who is using the app. Fail closed: with neither login nor the explicit
+# local-mode switch configured, nobody gets in.
+if _auth_configured():
+    if not st.user.is_logged_in:
+        st.markdown(
+            "Upload 10-K filings and ask questions about them. Every answer cites "
+            "the page it came from, and figures that aren't in the filing are never "
+            "guessed.\n\n"
+            "A sample filing (Microsoft FY2024 10-K) is ready to query as soon as "
+            "you sign in."
+        )
+        st.button("Sign in or create an account", on_click=st.login, type="primary")
+        st.stop()
+    OWNER = st.user.get("sub")
+    USER_LABEL = st.user.get("email", "Signed in")
+elif os.getenv("AUTH_DISABLED") == "1":
+    OWNER = "local"
+    USER_LABEL = "Local mode (login disabled)"
+else:
+    st.error(
+        "Login isn't configured. Add an [auth] section to .streamlit/secrets.toml, "
+        "or set AUTH_DISABLED=1 to run as a single local user."
+    )
+    st.stop()
+
+# The API trusts this header; it is only reachable from this server.
+HEADERS = {"X-User-Id": OWNER}
+
+# Chat history belongs to one user: reset it if someone else signs in
+# in the same browser session.
+if st.session_state.get("owner") != OWNER:
+    st.session_state.owner = OWNER
+    st.session_state.messages = []
+
+# Sidebar: account, upload filings, and show what is already indexed
 with st.sidebar:
+    st.caption(USER_LABEL)
+    if _auth_configured():
+        st.button("Sign out", on_click=st.logout)
+
     st.header("Documents")
     with st.form("upload", clear_on_submit=True):
         uploads = st.file_uploader(
@@ -54,6 +123,7 @@ with st.sidebar:
                     response = httpx.post(
                         f"{API_BASE_URL}/documents",
                         files={"file": (upload.name, upload.getvalue(), "application/pdf")},
+                        headers=HEADERS,
                         # Embedding a full 10-K takes a while
                         timeout=300.0,
                     )
@@ -64,41 +134,38 @@ with st.sidebar:
                     st.error(f"{upload.name}: {_error_detail(exc)}")
 
     try:
-        response = httpx.get(f"{API_BASE_URL}/documents", timeout=10.0)
+        response = httpx.get(f"{API_BASE_URL}/documents", headers=HEADERS, timeout=10.0)
         response.raise_for_status()
         documents = response.json()["documents"]
     except Exception as exc:
         documents = []
         st.warning(_error_detail(exc))
-    if documents:
-        st.caption("Indexed filings")
-        for doc in documents:
+    own = [d for d in documents if not d.get("shared")]
+    shared = [d for d in documents if d.get("shared")]
+    st.caption("Your filings")
+    if own:
+        for doc in own:
             st.markdown(f"- **{doc['source_file']}** — {doc['chunks']} chunks")
     else:
-        st.info("No filings indexed yet. Upload a PDF to get started.")
-
-# Session state for chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+        st.info("You haven't uploaded any filings yet.")
+    if shared:
+        st.caption("Sample filings (available to everyone)")
+        for doc in shared:
+            st.markdown(f"- **{doc['source_file']}** — {doc['chunks']} chunks")
 
 # Render existing chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        st.markdown(_md(msg["content"]))
         if msg["role"] == "assistant" and msg.get("sources"):
-            with st.expander("Source citations", expanded=False):
-                for src in msg["sources"]:
-                    st.markdown(
-                        f"**{src['source_file']}** — Page {src['page']}\n\n"
-                        f"> {src['excerpt']}"
-                    )
+            _render_sources(msg["sources"], expanded=False)
 
 # Chat input
 if question := st.chat_input("Ask a question about the financial reports …"):
     # Display user message
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
-        st.markdown(question)
+        st.markdown(_md(question))
 
     # Call the API
     with st.chat_message("assistant"):
@@ -107,6 +174,7 @@ if question := st.chat_input("Ask a question about the financial reports …"):
                 response = httpx.post(
                     f"{API_BASE_URL}/query",
                     json={"question": question},
+                    headers=HEADERS,
                     timeout=60.0,
                 )
                 response.raise_for_status()
@@ -127,15 +195,10 @@ if question := st.chat_input("Ask a question about the financial reports …"):
                 answer = f"Unexpected error: {exc}"
                 sources = []
 
-        st.markdown(answer)
+        st.markdown(_md(answer))
 
         if sources:
-            with st.expander("Source citations", expanded=True):
-                for src in sources:
-                    st.markdown(
-                        f"**{src['source_file']}** — Page {src['page']}\n\n"
-                        f"> {src['excerpt']}"
-                    )
+            _render_sources(sources, expanded=True)
 
     # Persist assistant message
     st.session_state.messages.append(
