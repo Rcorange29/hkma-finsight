@@ -204,3 +204,69 @@ def test_render_shows_the_printed_label_when_it_differs():
     text, _ = render(analyze(facts, ["free_cash_flow"], [2024], False))
     assert ("Capital expenditures (“Additions to property and equipment”) FY2024: "
             "$44,477 million (msft.pdf, p.71)") in text
+
+
+
+# ---------------------------------------------------------------------------
+# Breakdowns
+# ---------------------------------------------------------------------------
+
+SEGMENT_FIGURES = {
+    ("segment_revenue", "Intelligent Cloud"): {2024: 105362, 2023: 87907},
+    ("segment_revenue", "More Personal Computing"): {2024: 62032, 2023: 54734},
+    ("segment_operating_income", "Intelligent Cloud"): {2024: 49584, 2023: 37884},
+}
+
+
+def _segment_facts():
+    return [
+        Fact("public", "msft.pdf", metric, year, Decimal(millions) * M, "USD", part, 112,
+             f"{part}   {millions:,}", part)
+        for (metric, part), values in SEGMENT_FIGURES.items()
+        for year, millions in values.items()
+    ]
+
+
+def test_a_breakdown_gets_one_series_per_part():
+    series = analyze(_facts() + _segment_facts(), ["segment_revenue"], [2024], False)
+    assert [(s.part, s.results[0].value) for s in series] == [
+        ("Intelligent Cloud", Decimal(105362) * M),
+        ("More Personal Computing", Decimal(62032) * M),
+    ]
+
+
+def test_asking_for_a_part_computes_only_that_part():
+    [s] = analyze(_segment_facts(), ["segment_revenue"], [], True, parts=["Intelligent Cloud"])
+    assert [r.fiscal_year for r in s.results] == [2023, 2024]
+    assert s.changes[0].relative == (Decimal(105362) - Decimal(87907)) / Decimal(87907)
+
+
+def test_segment_operating_margin_uses_the_same_segments_figures():
+    [s] = analyze(_segment_facts(), ["segment_operating_margin"], [2024], False,
+                  parts=["Intelligent Cloud"])
+    assert s.results[0].value == Decimal(49584) / Decimal(105362)
+    # More Personal Computing has revenue but no operating income here: explained
+    [mpc] = analyze(_segment_facts(), ["segment_operating_margin"], [2024], False,
+                    parts=["More Personal Computing"])
+    assert mpc.results[0].value is None
+    assert "needs Segment operating income for More Personal Computing for FY2024" in (
+        mpc.results[0].problem)
+
+
+def test_a_filing_without_that_breakdown_is_skipped():
+    assert analyze(_facts(), ["segment_revenue"], [2024], False,
+                   parts=["Intelligent Cloud"]) == []
+
+
+def test_company_wide_figures_are_not_mixed_with_parts():
+    [s] = analyze(_facts() + _segment_facts(), ["revenue"], [2024], False)
+    assert (s.part, s.results[0].value) == ("", Decimal(245122) * M)
+
+
+def test_render_names_the_part():
+    text, sources = render(analyze(_segment_facts(), ["segment_revenue"], [2024], False,
+                                   parts=["Intelligent Cloud"]))
+    assert "**Segment revenue: Intelligent Cloud** · msft.pdf" in text
+    assert "**FY2024: $105,362 million** (msft.pdf, p.113)" in text
+    assert sources == [{"source_file": "msft.pdf", "page": 113,
+                        "excerpt": "Intelligent Cloud   105,362"}]

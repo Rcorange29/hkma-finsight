@@ -427,3 +427,82 @@ def test_a_named_company_matching_several_filings_searches_them_all(text_calls, 
                            planner=_plan(route="text", metrics=(), company="Microsoft"))
     assert (result.route, result.filing) == ("text", None)
     assert text_calls[-1][2] is None
+
+
+
+# ---------------------------------------------------------------------------
+# Parts of the company: segments, geography, product lines
+# ---------------------------------------------------------------------------
+
+def _store_parts():
+    facts = []
+    for metric, part, millions in [
+        ("segment_revenue", "Intelligent Cloud", 105362),
+        ("segment_revenue", "More Personal Computing", 62032),
+        ("segment_operating_income", "Intelligent Cloud", 49584),
+        ("geographic_revenue", "United States", 124704),
+        ("geographic_revenue", "Other countries", 120418),
+        ("product_revenue", "Dynamics products and cloud services", 6481),
+        ("product_revenue", "Server products and cloud services", 97726),
+        ("product_revenue", "Office products and cloud services", 54875),
+    ]:
+        facts.append(Fact(PUBLIC_OWNER, "msft.pdf", metric, 2024, Decimal(millions) * M, "USD",
+                          part, 112, f"{part}   {millions:,}", part))
+    base = [f for f in financials.load_facts([PUBLIC_OWNER]) if not f.segment]
+    financials.replace_facts(PUBLIC_OWNER, "msft.pdf", base + facts)
+    return base + facts
+
+
+@pytest.mark.parametrize(
+    ("metrics", "qualifier", "expected"),
+    [
+        (["revenue"], "Intelligent Cloud", (["segment_revenue"], ["Intelligent Cloud"])),
+        (["revenue"], "the Intelligent Cloud segment", (["segment_revenue"], ["Intelligent Cloud"])),
+        (["operating_margin"], "Intelligent Cloud",
+         (["segment_operating_margin"], ["Intelligent Cloud"])),
+        (["revenue"], "United States", (["geographic_revenue"], ["United States"])),
+        (["revenue"], "Dynamics", (["product_revenue"], ["Dynamics products and cloud services"])),
+        # Too vague: three product lines have "cloud services" in their names
+        (["revenue"], "cloud services", None),
+        # "segment" narrows "cloud" to the one segment
+        (["revenue"], "cloud segment", (["segment_revenue"], ["Intelligent Cloud"])),
+        (["revenue"], "Azure", None),               # not a part the filing breaks out
+        (["revenue"], "Q4", None),                  # a quarter isn't a part
+        (["net_income"], "Intelligent Cloud", None),  # no breakdown of net income
+        (["revenue"], "segment", None),             # nothing distinctive
+    ],
+)
+def test_breakdown_plan(metrics, qualifier, expected):
+    _store(PUBLIC_OWNER, "msft.pdf", MSFT)
+    facts = _store_parts()
+    assert router.breakdown_plan(metrics, qualifier, facts) == expected
+
+
+def test_a_segment_question_is_calculated(text_calls):
+    _store(PUBLIC_OWNER, "msft.pdf", MSFT)
+    _store_parts()
+    result = router.answer("Intelligent Cloud revenue in 2024?", "alice",
+                           planner=_plan(metrics=["revenue"], years=[2024],
+                                         qualifier="Intelligent Cloud"))
+    assert result.route == "calculation"
+    assert [(s.metric.key, s.part) for s in result.series] == [
+        ("segment_revenue", "Intelligent Cloud")]
+    assert "**FY2024: $105,362 million**" in result.answer
+    assert text_calls == []
+
+
+def test_a_qualifier_that_matches_no_part_still_goes_to_text(text_calls):
+    _store(PUBLIC_OWNER, "msft.pdf", MSFT)
+    _store_parts()
+    result = router.answer("How fast did Azure grow?", "alice",
+                           planner=_plan(metrics=["revenue"], yoy=True, qualifier="Azure"))
+    assert result.route == "text"
+
+
+def test_financials_api_lists_breakdown_figures(client):
+    _store(PUBLIC_OWNER, "msft.pdf", MSFT)
+    _store_parts()
+    figures = client.get("/financials", headers={"X-User-Id": "alice"}).json()["figures"]
+    cloud = next(f for f in figures if f["segment"] == "Intelligent Cloud"
+                 and f["metric"] == "segment_revenue")
+    assert (cloud["name"], cloud["display"]) == ("Segment revenue", "$105,362 million")

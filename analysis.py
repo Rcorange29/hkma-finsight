@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from itertools import pairwise
 
-from financials import LINE_ITEMS, Fact, page_number, same_words
+from financials import BREAKDOWNS, ITEM_NAMES, LINE_ITEMS, Fact, page_number, same_words
 
 # ---------------------------------------------------------------------------
 # Metric catalog
@@ -38,6 +38,9 @@ class Metric:
     unit: str           # USD | USD/share | shares | percent | multiple
     description: str
     formulas: tuple[Formula, ...] = ()      # empty: a line item, read directly
+    # For breakdowns: segment | geography | product. Computed once per part,
+    # with every input read for that same part.
+    dimension: str | None = None
 
     @property
     def is_line_item(self) -> bool:
@@ -89,9 +92,29 @@ _DERIVED = [
            "Cash dividends paid as a share of net income."),
 ]
 
+_BREAKDOWN_METRICS = [
+    *(Metric(b.key, b.name, "USD",
+             f"{ITEM_NAMES[b.total]} for one {b.dimension}, from the filing's breakdown.",
+             dimension=b.dimension)
+      for b in BREAKDOWNS.values()),
+    Metric("segment_operating_margin", "Segment operating margin", "percent",
+           "A segment's operating income as a share of its revenue.", (
+               Formula(("segment_operating_income", "segment_revenue"), lambda o, r: o / r,
+                       "Segment operating income ÷ Segment revenue"),
+           ), dimension="segment"),
+]
+
 METRICS: dict[str, Metric] = {
     **{k: Metric(k, item.name, item.unit, item.hint) for k, item in LINE_ITEMS.items()},
     **{m.key: m for m in _DERIVED},
+    **{m.key: m for m in _BREAKDOWN_METRICS},
+}
+
+# The breakdown metric answering "<company-wide metric> for <some part>"
+BREAKDOWN_OF: dict[str, list[str]] = {
+    "revenue": ["segment_revenue", "geographic_revenue", "product_revenue"],
+    "operating_income": ["segment_operating_income"],
+    "operating_margin": ["segment_operating_margin"],
 }
 
 
@@ -126,44 +149,59 @@ class Series:
     results: list[Result]
     changes: list[Change]
     cagr: tuple[int, int, Decimal] | None = None     # (from year, to year, rate)
+    part: str = ""                                   # for breakdowns: the segment etc.
 
 
-FactIndex = dict[tuple[str, int], Fact]
+FactIndex = dict[tuple[str, str, int], Fact]
 
 
 def index_facts(facts: list[Fact]) -> dict[str, FactIndex]:
-    """Group facts by source file, keyed by (metric, fiscal_year)."""
+    """Group facts by source file, keyed by (metric, segment, fiscal_year)."""
     by_file: dict[str, FactIndex] = {}
     for fact in facts:
-        by_file.setdefault(fact.source_file, {})[(fact.metric, fact.fiscal_year)] = fact
+        key = (fact.metric, fact.segment, fact.fiscal_year)
+        by_file.setdefault(fact.source_file, {})[key] = fact
     return by_file
 
 
-def compute(metric: Metric, index: FactIndex, source_file: str, year: int) -> Result:
-    """One metric for one fiscal year of one filing."""
+def parts_of(metric: Metric, index: FactIndex) -> list[str]:
+    """The parts (segments, areas, product lines) a breakdown metric has figures for."""
+    if metric.dimension is None:
+        return []
+    key = metric.formulas[0].inputs[0] if metric.formulas else metric.key
+    return sorted({part for k, part, _ in index if k == key})
+
+
+def compute(
+    metric: Metric, index: FactIndex, source_file: str, year: int, part: str = ""
+) -> Result:
+    """One metric for one fiscal year of one filing (and one part, for breakdowns)."""
+    part = part if metric.dimension else ""
+    of_part = f" for {part}" if part else ""
     if metric.is_line_item:
-        fact = index.get((metric.key, year))
+        fact = index.get((metric.key, part, year))
         if fact is None:
             return Result(metric, source_file, year, None,
-                          problem=f"{metric.name} for FY{year} is not in the extracted figures.")
+                          problem=f"{metric.name}{of_part} for FY{year} is not in the "
+                                  "extracted figures.")
         return Result(metric, source_file, year, fact.value, inputs=[fact])
 
     # Formulas are tried in order; the first whose inputs all exist is used.
     for formula in metric.formulas:
-        facts = [index.get((key, year)) for key in formula.inputs]
+        facts = [index.get((key, part, year)) for key in formula.inputs]
         if any(f is None for f in facts):
             continue
         try:
             value = formula.compute(*(f.value for f in facts))
         except (ZeroDivisionError, ArithmeticError):
             zero = next((f for f in facts if f.value == 0), None)
-            what = f"{LINE_ITEMS[zero.metric].name} is zero" if zero else "division by zero"
+            what = f"{ITEM_NAMES[zero.metric]} is zero" if zero else "division by zero"
             return Result(metric, source_file, year, None, formula.text, facts,
                           problem=f"not meaningful: {what}.")
         return Result(metric, source_file, year, value, formula.text, facts)
 
     primary = metric.formulas[0]
-    missing = [LINE_ITEMS[k].name for k in primary.inputs if (k, year) not in index]
+    missing = [ITEM_NAMES[k] + of_part for k in primary.inputs if (k, part, year) not in index]
     return Result(metric, source_file, year, None, primary.text,
                   problem=f"needs {', '.join(missing)} for FY{year}, which "
                           f"{'is' if len(missing) == 1 else 'are'} not in the extracted figures.")
@@ -178,10 +216,17 @@ def _change(metric: Metric, older: Result, newer: Result) -> Change:
 
 
 def analyze(
-    facts: list[Fact], metric_keys: list[str], fiscal_years: list[int], year_over_year: bool
+    facts: list[Fact],
+    metric_keys: list[str],
+    fiscal_years: list[int],
+    year_over_year: bool,
+    parts: list[str] | None = None,
 ) -> list[Series]:
     """
     Compute each metric for each filing that has figures.
+
+    Breakdown metrics get one series per part: the `parts` asked for that the
+    filing has, or every part it has when none are asked for.
 
     Years: the requested ones, or else the latest year the metric can be
     computed for. With year_over_year and a single year, the year before is
@@ -191,38 +236,55 @@ def analyze(
     """
     series: list[Series] = []
     for source_file, index in index_facts(facts).items():
-        available = sorted({year for _, year in index}, reverse=True)
+        available = sorted({year for _, _, year in index}, reverse=True)
         for key in metric_keys:
             metric = METRICS[key]
-            if fiscal_years:
-                years = set(fiscal_years)
+            if metric.dimension is None:
+                targets = [""]
             else:
-                latest = next(
-                    (y for y in available if compute(metric, index, source_file, y).value is not None),
-                    available[0] if available else None,
-                )
-                years = {latest} if latest is not None else set()
-            if year_over_year and len(years) == 1:
-                years |= {min(years) - 1}
-            # A year that can't be computed stays in, with the reason, so a missing
-            # comparison is explained rather than silently absent.
-            results = [compute(metric, index, source_file, y) for y in sorted(years)]
-            valued = [r for r in results if r.value is not None]
-            changes = [_change(metric, a, b) for a, b in pairwise(valued)]
-            cagr = None
-            if (
-                len(valued) >= 2
-                and metric.unit in ("USD", "USD/share", "shares")
-                and valued[-1].fiscal_year - valued[0].fiscal_year > 1
-                and valued[0].value > 0
-                and valued[-1].value > 0
-            ):
-                first, last = valued[0], valued[-1]
-                span = last.fiscal_year - first.fiscal_year
-                rate = (last.value / first.value) ** (Decimal(1) / span) - 1
-                cagr = (first.fiscal_year, last.fiscal_year, rate)
-            series.append(Series(metric, source_file, results, changes, cagr))
+                # Parts asked for are shown even when a figure is missing, with the
+                # reason; a filing with no such breakdown at all is skipped.
+                present = parts_of(metric, index)
+                targets = (list(parts) if present else []) if parts else present
+            for part in targets:
+                series.extend(_series(metric, index, source_file, available, part,
+                                      fiscal_years, year_over_year))
     return series
+
+
+def _series(
+    metric: Metric, index: FactIndex, source_file: str, available: list[int], part: str,
+    fiscal_years: list[int], year_over_year: bool,
+) -> list[Series]:
+    if fiscal_years:
+        years = set(fiscal_years)
+    else:
+        latest = next(
+            (y for y in available
+             if compute(metric, index, source_file, y, part).value is not None),
+            available[0] if available else None,
+        )
+        years = {latest} if latest is not None else set()
+    if year_over_year and len(years) == 1:
+        years |= {min(years) - 1}
+    # A year that can't be computed stays in, with the reason, so a missing
+    # comparison is explained rather than silently absent.
+    results = [compute(metric, index, source_file, y, part) for y in sorted(years)]
+    valued = [r for r in results if r.value is not None]
+    changes = [_change(metric, a, b) for a, b in pairwise(valued)]
+    cagr = None
+    if (
+        len(valued) >= 2
+        and metric.unit in ("USD", "USD/share", "shares")
+        and valued[-1].fiscal_year - valued[0].fiscal_year > 1
+        and valued[0].value > 0
+        and valued[-1].value > 0
+    ):
+        first, last = valued[0], valued[-1]
+        span = last.fiscal_year - first.fiscal_year
+        rate = (last.value / first.value) ** (Decimal(1) / span) - 1
+        cagr = (first.fiscal_year, last.fiscal_year, rate)
+    return [Series(metric, source_file, results, changes, cagr, part)]
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +334,7 @@ def cite(fact: Fact) -> str:
 
 
 def _describe_input(fact: Fact) -> str:
-    name = LINE_ITEMS[fact.metric].name
+    name = ITEM_NAMES[fact.metric]
     printed = "" if same_words(fact.label, name) else f" (“{fact.label}”)"
     return f"{name}{printed} FY{fact.fiscal_year}: {format_value(fact.value, fact.unit)} {cite(fact)}"
 
@@ -288,7 +350,8 @@ def render(series: list[Series]) -> tuple[str, list[dict]]:
     blocks: list[str] = []
     sources: dict[tuple[str, int, str], dict] = {}
     for s in series:
-        lines = [f"**{s.metric.name}** · {s.source_file}"]
+        title = f"{s.metric.name}: {s.part}" if s.part else s.metric.name
+        lines = [f"**{title}** · {s.source_file}"]
         for r in s.results:
             if r.value is None:
                 lines.append(f"- FY{r.fiscal_year}: not calculated: {r.problem}")
@@ -296,7 +359,10 @@ def render(series: list[Series]) -> tuple[str, list[dict]]:
             shown = format_value(r.value, s.metric.unit)
             if s.metric.is_line_item:
                 fact = r.inputs[0]
-                printed = "" if same_words(fact.label, s.metric.name) else f" (“{fact.label}”)"
+                printed = (
+                    "" if same_words(fact.label, s.metric.name) or fact.label == s.part
+                    else f" (“{fact.label}”)"
+                )
                 lines.append(f"- **FY{r.fiscal_year}: {shown}**{printed} {cite(fact)}")
             else:
                 lines.append(f"- **FY{r.fiscal_year}: {shown}** = {r.formula}, from:")

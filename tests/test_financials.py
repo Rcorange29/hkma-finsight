@@ -322,3 +322,148 @@ def test_extract_and_store_clears_old_figures_even_if_extraction_fails(monkeypat
     with pytest.raises(RuntimeError):
         financials.extract_and_store(PAGES, "a.pdf", "alice")
     assert financials.load_facts(["alice"]) == []
+
+
+
+# ---------------------------------------------------------------------------
+# Breakdowns: segments, geography, product lines
+# ---------------------------------------------------------------------------
+
+SEGMENTS = """PART II
+Item 8
+Segment revenue and operating income were as follows during the periods presented:
+(In millions)
+Year Ended June 30,   2024    2023    2022
+Revenue
+Productivity and Business Processes  $ 77,728   $ 69,274   $ 63,364
+Intelligent Cloud   105,362    87,907    74,965
+More Personal Computing   62,032    54,734    59,941
+Total  $ 245,122   $ 211,915   $ 198,270
+Operating Income
+Productivity and Business Processes  $ 40,540   $ 34,189   $ 29,690
+Intelligent Cloud   49,584    37,884    33,203
+More Personal Computing   19,309    16,450    20,490
+Total  $ 109,433   $ 88,523   $ 83,383
+Long-lived assets, classified by the location of the controlling statutory company:
+(In millions)
+June 30,  2024   2023   2022
+United States  $ 186,106   $ 114,380   $ 106,430
+Other countries   115,263    72,859    59,938
+Total  $ 301,369   $ 187,239   $ 166,368
+"""
+
+M = Decimal(1_000_000)
+
+
+def _totals():
+    return [
+        Fact("public", "msft.pdf", metric, year, Decimal(v) * M, "USD", metric, 66, "row")
+        for metric, values in {
+            "revenue": {2024: 245122, 2023: 211915, 2022: 198270},
+            "operating_income": {2024: 109433, 2023: 88523, 2022: 83383},
+        }.items()
+        for year, v in values.items()
+    ]
+
+
+def _parts(*rows):
+    return lambda pages: [financials.PartMapping(**r) for r in rows]
+
+
+def _segment_rows(breakdown, labels_values):
+    return [dict(breakdown=breakdown, part=label, page=112, label=label, value=value,
+                 fiscal_year=2024) for label, value in labels_values]
+
+
+REVENUE_ROWS = [("Productivity and Business Processes", "77,728"),
+                ("Intelligent Cloud", "105,362"), ("More Personal Computing", "62,032")]
+INCOME_ROWS = [("Productivity and Business Processes", "40,540"),
+               ("Intelligent Cloud", "49,584"), ("More Personal Computing", "19,309")]
+
+
+def test_rejoin_rows_puts_split_rows_back_together():
+    text = "Windows   23,244    21,507    24,732\nGaming   21,503\n \n  15,466\n \n  16,230\nLinkedIn   16,372"
+    lines = financials.rejoin_rows(text).splitlines()
+    assert "Gaming   21,503  15,466  16,230" in lines
+    assert lines[0] == "Windows   23,244    21,507    24,732"
+    assert lines[-1] == "LinkedIn   16,372"
+
+
+def test_rejoin_rows_leaves_year_headers_alone():
+    text = "Total  $ 245,122\n2024   2023   2022"
+    assert financials.rejoin_rows(text).splitlines() == ["Total  $ 245,122", "2024   2023   2022"]
+
+
+def test_breakdowns_that_add_up_to_the_totals_are_kept():
+    pages = {112: SEGMENTS}
+    facts = financials.extract_breakdowns(pages, "msft.pdf", "public", _totals(), mapper=_parts(
+        *_segment_rows("segment_revenue", REVENUE_ROWS),
+        *_segment_rows("segment_operating_income", INCOME_ROWS),
+    ))
+    by = {(f.metric, f.segment, f.fiscal_year): f for f in facts}
+    assert len(facts) == 18          # 2 breakdowns x 3 segments x 3 years
+    cloud = by[("segment_revenue", "Intelligent Cloud", 2022)]
+    assert cloud.value == Decimal(74965) * M
+    assert (cloud.page, cloud.line) == (112, "Intelligent Cloud   105,362    87,907    74,965")
+    # The same label in the operating income block is read from that block
+    assert by[("segment_operating_income", "Intelligent Cloud", 2024)].value == Decimal(49584) * M
+
+
+def test_a_breakdown_that_does_not_add_up_is_dropped():
+    # The long-lived assets table also lists the United States and other countries,
+    # but its parts add up to 301,369, not revenue
+    facts = financials.extract_breakdowns({112: SEGMENTS}, "msft.pdf", "public", _totals(),
+                                          mapper=_parts(*_segment_rows("geographic_revenue", [
+                                              ("United States", "186,106"),
+                                              ("Other countries", "115,263")])))
+    assert facts == []
+
+
+def test_a_breakdown_missing_a_part_is_dropped_whole():
+    facts = financials.extract_breakdowns({112: SEGMENTS}, "msft.pdf", "public", _totals(),
+                                          mapper=_parts(*_segment_rows("segment_revenue",
+                                                                       REVENUE_ROWS[:2])))
+    assert facts == []
+
+
+def test_a_part_mapped_to_the_wrong_block_breaks_the_sum():
+    # Intelligent Cloud's operating income passed off as its revenue
+    rows = [REVENUE_ROWS[0], ("Intelligent Cloud", "49,584"), REVENUE_ROWS[2]]
+    facts = financials.extract_breakdowns({112: SEGMENTS}, "msft.pdf", "public", _totals(),
+                                          mapper=_parts(*_segment_rows("segment_revenue", rows)))
+    assert facts == []
+
+
+def test_breakdowns_need_verified_totals():
+    facts = financials.extract_breakdowns({112: SEGMENTS}, "msft.pdf", "public", [],
+                                          mapper=_parts(*_segment_rows("segment_revenue",
+                                                                       REVENUE_ROWS)))
+    assert facts == []
+
+
+def test_breakdown_figures_are_stored_alongside_totals():
+    part = Fact("alice", "a.pdf", "segment_revenue", 2024, Decimal(105362) * M, "USD",
+                "Intelligent Cloud", 112, "Intelligent Cloud   105,362", "Intelligent Cloud")
+    financials.replace_facts("alice", "a.pdf", [_fact(), part])
+    loaded = financials.load_facts(["alice"])
+    assert sorted((f.metric, f.segment) for f in loaded) == [
+        ("revenue", ""), ("segment_revenue", "Intelligent Cloud")]
+
+
+def test_a_database_from_before_breakdowns_is_carried_over(tmp_path, monkeypatch):
+    import sqlite3
+
+    db = tmp_path / "old.sqlite3"
+    monkeypatch.setattr(financials, "FACTS_DB", db)
+    conn = sqlite3.connect(db)
+    conn.execute("""CREATE TABLE facts (owner TEXT NOT NULL, source_file TEXT NOT NULL,
+        metric TEXT NOT NULL, fiscal_year INTEGER NOT NULL, value TEXT NOT NULL,
+        unit TEXT NOT NULL, label TEXT NOT NULL, page INTEGER NOT NULL, line TEXT NOT NULL,
+        PRIMARY KEY (owner, source_file, metric, fiscal_year))""")
+    conn.execute("INSERT INTO facts VALUES ('alice', 'a.pdf', 'revenue', 2024, '245122000000', "
+                 "'USD', 'Total revenue', 66, 'Total revenue   245,122')")
+    conn.commit()
+    conn.close()
+    assert financials.load_facts(["alice"]) == [_fact()]
+    tables = sqlite3.connect(db).execute("SELECT name FROM sqlite_master").fetchall()
+    assert ("facts",) not in tables

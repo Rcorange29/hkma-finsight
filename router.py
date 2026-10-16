@@ -28,7 +28,11 @@ from ingest import PUBLIC_OWNER
 
 PLANNER_MODEL = "gpt-4o-mini"
 
-MetricKey = Literal[tuple(analysis.METRICS)]  # type: ignore[valid-type]
+# The planner picks from the company-wide metrics only; a part of the company
+# (a segment, an area, a product line) comes through the qualifier, and code
+# maps it onto a breakdown metric (breakdown_plan).
+PLANNER_METRICS = {k: m for k, m in analysis.METRICS.items() if m.dimension is None}
+MetricKey = Literal[tuple(PLANNER_METRICS)]  # type: ignore[valid-type]
 
 
 class QuestionPlan(BaseModel):
@@ -74,7 +78,9 @@ below: a reported amount (such as revenue or net income), a margin, ratio or ret
 growth, or a comparison between years. This holds in any wording or tense and whether or \
 not a year is named: with no year, the latest year in the filing is used.
 Choose "text" when the question asks why or how something happened, or about anything \
-not in the list: risks, segments, products, strategy, accounting policies, other amounts.
+not in the list: risks, strategy, accounting policies, other amounts. A listed metric for \
+one part of the company (a segment, product line, geography) is still "calculation", with \
+that part in qualifier.
 
 For "calculation":
 - metrics: the keys of the metrics asked about ("operating margin" -> operating_margin; \
@@ -109,7 +115,8 @@ Examples:
 - "How did revenue grow from 2022 to 2024?" -> calculation, [revenue], [2022, 2023, 2024], true
 - "Gross and net margin for fiscal 2023" -> calculation, [gross_margin, net_margin], [2023], false
 - "Why did operating margin improve?" -> text
-- "How fast did the cloud segment grow?" -> text (segment revenue is not in the list)
+- "How fast did the cloud segment grow?" -> calculation, [revenue], [], true, qualifier \
+"cloud segment"
 - "What risks does Acme describe?" -> text, company "Acme"
 - "What was Microsoft's net margin?" -> calculation, [net_margin], company "Microsoft"
 - "What was revenue?" -> calculation, [revenue], company null
@@ -170,6 +177,60 @@ def match_filing(company: str | None, filings: dict[str, ingest.Filing]) -> str 
     return hits[0] if len(hits) == 1 else None
 
 
+# Words that don't single out a part: "the cloud segment" means "cloud"
+_GENERIC_PART_WORDS = frozenset(
+    "segment segments business businesses division unit line lines the and of our its "
+    "revenue revenues sales operating income margin".split()
+)
+# A qualifier naming the kind of part restricts the match to that kind
+_DIMENSION_WORDS = {
+    "segment": {"segment", "segments"},
+    "geography": {"country", "countries", "geographic", "geography", "region", "regions"},
+    "product": {"product", "products", "offering", "offerings"},
+}
+MAX_PARTS = 2   # a qualifier matching more parts than this is too vague to calculate
+
+
+def breakdown_plan(
+    metrics: list[str], qualifier: str, facts: list[financials.Fact]
+) -> tuple[list[str], list[str]] | None:
+    """
+    Map company-wide metrics and a qualifier onto breakdown metrics and parts:
+    (["revenue"], "Intelligent Cloud") -> (["segment_revenue"], ["Intelligent Cloud"]).
+
+    A part matches when every distinctive word of the qualifier is in its name
+    ("Dynamics" matches "Dynamics products and cloud services"). None when a
+    metric has no breakdown, nothing matches, or the match is too vague.
+    """
+    words = set(re.findall(r"[a-z0-9]+", qualifier.lower()))
+    wanted = words - _GENERIC_PART_WORDS - {w for ws in _DIMENSION_WORDS.values() for w in ws}
+    kinds = {d for d, ws in _DIMENSION_WORDS.items() if words & ws}
+    if not wanted:
+        return None
+    keys: list[str] = []
+    parts: set[str] = set()
+    for metric in metrics:
+        found = False
+        for key in analysis.BREAKDOWN_OF.get(metric, []):
+            breakdown = analysis.METRICS[key]
+            if kinds and breakdown.dimension not in kinds:
+                continue
+            source = breakdown.formulas[0].inputs[0] if breakdown.formulas else key
+            matched = {
+                f.segment for f in facts
+                if f.metric == source and wanted <= set(re.findall(r"[a-z0-9]+", f.segment.lower()))
+            }
+            if matched:
+                found = True
+                keys.append(key)
+                parts |= matched
+        if not found:
+            return None
+    if not parts or len(parts) > MAX_PARTS:
+        return None
+    return keys, sorted(parts)
+
+
 def _no_filing_for(company: str, filings: dict[str, ingest.Filing]) -> Answer:
     available = "; ".join(
         f"{f.company} ({name})" if f.company else name for name, f in filings.items()
@@ -190,7 +251,7 @@ def plan_question(question: str) -> QuestionPlan:
     from langchain_openai import ChatOpenAI
 
     metrics = "\n".join(
-        f"- {m.key}: {m.name}. {m.description}" for m in analysis.METRICS.values()
+        f"- {m.key}: {m.name}. {m.description}" for m in PLANNER_METRICS.values()
     )
     llm = ChatOpenAI(model=PLANNER_MODEL, temperature=0).with_structured_output(QuestionPlan)
     return llm.invoke([
@@ -265,14 +326,21 @@ def _answer(question: str, owner: str, source_file: str | None, planner) -> Answ
     filing = filings[chosen] if chosen else None
     if filing:
         facts = [f for f in facts if f.source_file == filing.source_file]
-    if (plan is None or plan.route != "calculation" or not plan.metrics or not facts
-            or plan.qualifier):
-        # A qualifier (a segment, a quarter, "declared" vs paid, ...) means the
-        # company-wide annual figures in the engine aren't what was asked for
+    if plan is None or plan.route != "calculation" or not plan.metrics or not facts:
         return _text_answer(question, owner, filing)
 
     metrics = list(dict.fromkeys(plan.metrics))     # dedupe, keep order
-    series = analysis.analyze(facts, metrics, plan.fiscal_years, plan.year_over_year)
+    parts = None
+    if plan.qualifier:
+        # A part of the company the filing breaks out (a segment, an area, a
+        # product line) is calculated; anything else the qualifier names (a
+        # quarter, an adjusted measure, "declared" vs paid) isn't in the
+        # engine's figures, so it goes to text.
+        breakdown = breakdown_plan(metrics, plan.qualifier, facts)
+        if breakdown is None:
+            return _text_answer(question, owner, filing)
+        metrics, parts = breakdown
+    series = analysis.analyze(facts, metrics, plan.fiscal_years, plan.year_over_year, parts)
 
     if not any(r.value is not None for s in series for r in s.results):
         # Nothing computable: say why, then answer from the text without arithmetic.
