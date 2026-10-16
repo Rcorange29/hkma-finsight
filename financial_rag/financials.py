@@ -788,7 +788,7 @@ def main(argv: list[str]) -> None:
                       f"{fact.value:>20}  p.{page_number(fact.page)}  {fact.line}")
         return
 
-    import ingest  # local import: ingest imports this module
+    from financial_rag import ingest  # local import: ingest imports this module
 
     for pdf_path, owner in ingest.pdf_jobs():
         extract_and_store(load_pages(pdf_path), pdf_path.name, owner)
