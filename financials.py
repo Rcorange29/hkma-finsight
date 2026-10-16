@@ -187,6 +187,13 @@ _DASHES = {"—", "–", "-"}   # some filings print zero as a dash
 _YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
 _GROUPED = re.compile(r"\b\d{1,3}(?:,\d{3})+\b")
 _SCALE = re.compile(r"\bin\s+(thousands|millions|billions)\b", re.IGNORECASE)
+# Within a scale note: shares with their own scale ("shares ... in thousands"), or
+# shares excepted from it ("except share data"). "per share" amounts are neither.
+_SHARE_SCALE = re.compile(
+    r"(?<!per )\bshares?\b[^)]*?\bin\s+(thousands|millions|billions)\b", re.IGNORECASE)
+_SHARES_UNSCALED = re.compile(r"\bexcept\b[^)]*?(?<!per )\bshares?\b", re.IGNORECASE)
+# "September 27," / "June 30" / "Dec. 31,": the date above a year in a column header
+_DATE_FRAGMENT = re.compile(r"[A-Z][a-z]{2,8}\.?\s+\d{1,2},?")
 _SCALES = {"thousands": Decimal(1_000), "millions": Decimal(1_000_000),
            "billions": Decimal(1_000_000_000)}
 _WORD = re.compile(r"[a-z0-9]+")
@@ -237,21 +244,52 @@ def split_row(line: str) -> tuple[str, list[Decimal]]:
 
 
 def header_years(lines: list[str], row: int) -> list[int] | None:
-    """Column years from the nearest header line above `row` ('... 2024 2023 2022')."""
+    """
+    Column years from the nearest header above `row`: one line ('... 2024 2023 2022'),
+    or one year per line, as some PDFs extract a header of dated columns
+    ('September 27,' / '2025' / 'September 28,' / '2024').
+    """
+    stacked: list[int] = []
     for j in range(row - 1, -1, -1):
-        line = lines[j]
+        line = lines[j].strip()
         if _GROUPED.search(line):
+            if stacked:
+                break
             continue    # a data row, not a header
+        if _YEAR.fullmatch(line):
+            stacked.insert(0, int(line))
+            continue
+        if stacked:
+            if _DATE_FRAGMENT.fullmatch(line):
+                continue
+            break
         years = [int(y) for y in _YEAR.findall(line)]
         if len(years) >= 2 and len(set(years)) == len(years):
             return years
+    if len(stacked) >= 2 and len(set(stacked)) == len(stacked):
+        return stacked
     return None
 
 
-def page_scale(text: str) -> Decimal | None:
-    """Multiplier from the statement's '(In millions, except per share amounts)' note."""
+def page_scale(text: str, unit: str = "USD") -> Decimal | None:
+    """
+    Multiplier from the statement's '(In millions, except per share amounts)' note.
+
+    Share counts can be scaled differently from dollars: '(In millions, except
+    number of shares, which are reflected in thousands)' puts them in thousands,
+    and '(In thousands, except share data)' leaves them unscaled.
+    """
     match = _SCALE.search(text)
-    return _SCALES[match.group(1).lower()] if match else None
+    if not match:
+        return None
+    if unit == "shares":
+        end = text.find(")", match.start())
+        note = text[match.start(): end if end != -1 else match.end() + 200]
+        if own := _SHARE_SCALE.search(note):
+            return _SCALES[own.group(1).lower()]
+        if _SHARES_UNSCALED.search(note):
+            return Decimal(1)
+    return _SCALES[match.group(1).lower()]
 
 
 def _words(text: str) -> set[str]:
@@ -292,6 +330,7 @@ def verify_row(page_text: str, label: str, value_text: str, fiscal_year: int) ->
     target = parse_number(value_text)
     if target is None:
         return None
+    label = _FOOTNOTE.sub("", label)    # the model may copy a footnote marker
     lines = [ln.rstrip() for ln in page_text.splitlines()]
     candidates: list[tuple[float, VerifiedRow]] = []
     for i, line in enumerate(lines):
@@ -451,7 +490,7 @@ def extract_facts(
         if item.unit == "USD/share":
             multiplier = Decimal(1)
         else:
-            multiplier = page_scale(text)
+            multiplier = page_scale(text, item.unit)
             if multiplier is None:
                 rejected += 1   # no "(In millions ...)" note: scale unknown
                 continue
@@ -479,10 +518,11 @@ def extract_facts(
 # ---------------------------------------------------------------------------
 
 _BREAKDOWN_PAGE = re.compile(
-    r"segment|geographic|product and service|by product|offerings", re.IGNORECASE)
+    r"segment|geographic|product and service|by product|offerings|\bcountries\b",
+    re.IGNORECASE)
 MAX_BREAKDOWN_PAGES = 6
 _NUMBERS_ONLY = re.compile(r"^[\s$]*(?:\(?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*\)?[\s$]*)+$")
-_FOOTNOTE = re.compile(r"\s*\([a-z]\)\s*$")
+_FOOTNOTE = re.compile(r"\s*\([a-z0-9]\)\s*$")     # "Services (1)", "Other (a)"
 
 
 def rejoin_rows(text: str) -> str:

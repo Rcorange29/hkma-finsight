@@ -166,7 +166,17 @@ def doc_to_context(doc) -> str:
     if meta.get("company"):
         source = f"{source} ({meta['company']})"
     page = page_number(meta.get("page"))
-    return f"Source: {source}, Page: {page}\n{doc.page_content}"
+    return f"Source: {source}, Page: {page}\n{strip_page_footers(doc.page_content)}"
+
+
+# A filing's own page footer, "Apple Inc. | 2025 Form 10-K | 22": its number is the
+# printed page, not the PDF page citations use, and the model would cite it.
+_PAGE_FOOTER = re.compile(r"^[^\n]*\|\s*(?:\d{4}\s+)?Form\s+10-K\s*\|\s*\d+[ \t]*$",
+                          re.MULTILINE | re.IGNORECASE)
+
+
+def strip_page_footers(text: str) -> str:
+    return _PAGE_FOOTER.sub("", text)
 
 
 def _format_docs(docs) -> str:

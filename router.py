@@ -190,6 +190,20 @@ _DIMENSION_WORDS = {
 }
 MAX_PARTS = 2   # a qualifier matching more parts than this is too vague to calculate
 
+# Abbreviated country names, as filings print them ("U.S.", "UK"); case-sensitive,
+# so the word "us" is left alone
+_COUNTRY_ABBREVIATIONS = [
+    (re.compile(r"\bU\.S\.(?:A\.)?|\bUSA?\b"), "United States"),
+    (re.compile(r"\bU\.K\.|\bUK\b"), "United Kingdom"),
+]
+
+
+def _part_words(text: str) -> set[str]:
+    """Words of a part's name or a qualifier: "U.S." and "United States" give the same."""
+    for pattern, name in _COUNTRY_ABBREVIATIONS:
+        text = pattern.sub(name, text)
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
 
 def breakdown_plan(
     metrics: list[str], qualifier: str, facts: list[financials.Fact]
@@ -202,7 +216,7 @@ def breakdown_plan(
     ("Dynamics" matches "Dynamics products and cloud services"). None when a
     metric has no breakdown, nothing matches, or the match is too vague.
     """
-    words = set(re.findall(r"[a-z0-9]+", qualifier.lower()))
+    words = _part_words(qualifier)
     wanted = words - _GENERIC_PART_WORDS - {w for ws in _DIMENSION_WORDS.values() for w in ws}
     kinds = {d for d, ws in _DIMENSION_WORDS.items() if words & ws}
     if not wanted:
@@ -218,7 +232,7 @@ def breakdown_plan(
             source = breakdown.formulas[0].inputs[0] if breakdown.formulas else key
             matched = {
                 f.segment for f in facts
-                if f.metric == source and wanted <= set(re.findall(r"[a-z0-9]+", f.segment.lower()))
+                if f.metric == source and wanted <= _part_words(f.segment)
             }
             if matched:
                 found = True

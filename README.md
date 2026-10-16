@@ -88,7 +88,7 @@ carries a visible "Not verified against the excerpts" warning naming each proble
 | `rag.py` | Hybrid retrieval, score-threshold filtering, cross-encoder reranking, prompting. Exposes `query()`. |
 | `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
 | `eval_retrieval.py` | Retrieval benchmark: three pipeline configurations on 72 questions, scored on whether the right passage is retrieved. |
-| `eval_answers.py` | End-to-end benchmark: 31 questions through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
+| `eval_answers.py` | End-to-end benchmark: 47 questions on two companies' filings through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
 | `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `GET /documents`, `GET /financials`, `GET /usage`, `GET /health`. |
 | `usage.py` | Usage limits: questions and uploads per user per month, questions per minute, and a daily cap across all users. |
 | `app.py` | Streamlit chat UI with expandable source citations and a sidebar for uploading PDFs. |
@@ -122,15 +122,19 @@ mapping, never stored.** Code then verifies the mapping against the page text:
 
 - the row must exist on that page and its label must match (wrapped labels included);
 - the sample value must sit in the column whose header year matches (`Year Ended June 30,
-  2024 2023 2022`), which catches a value attributed to the wrong year;
+  2024 2023 2022`, or Apple's dated columns, which PDF extraction puts one year per line),
+  which catches a value attributed to the wrong year;
 - if two equally good rows disagree, or two mappings for one metric give different values,
   the metric is dropped rather than guessed.
 
 Only then are the values read, for every year column, from the PDF text itself. They are
 scaled by the statement's own "(In millions, except per share amounts)" note (amounts are
 rejected if the page states no scale), and outflows printed in parentheses are stored as
-positive amounts. Every figure keeps its file, page and row as printed. On Microsoft's
-FY2024 10-K this yields 56-59 figures (21-22 line items, two or three years each), with
+positive amounts. Share counts follow the note's own wording for shares: Apple's "(In
+millions, except number of shares, which are reflected in thousands…)" puts them in
+thousands, and "(In thousands, except share data)" leaves them unscaled. Every figure
+keeps its file, page and row as printed. On Microsoft's FY2024 10-K this yields 56-59
+figures (21-22 line items, two or three years each), and on Apple's FY2025 10-K 59, with
 every mapping verified. Which items the model maps can vary a little between runs. For
 example, "Diluted 7,469", which wraps under its heading, is sometimes skipped. A skipped
 item is reported as missing, never guessed.
@@ -150,7 +154,10 @@ yields 54 breakdown figures:
 - the United States and other countries;
 - 10 product lines;
 
-all three fiscal years each.
+all three fiscal years each. Apple's yields 24: the United States, China and other
+countries, and 5 product lines (iPhone, Mac, iPad, Wearables, Services). Apple's segments
+are not extracted. Its segment tables put the segments in columns, one table per year,
+and the engine reads breakdowns row by row, so segment questions go to text.
 
 **2. Calculation (`analysis.py`).** Pure Python with `Decimal` arithmetic: no model, no
 floating-point rounding until display. Results carry their inputs, and inputs carry their
@@ -341,7 +348,9 @@ Get a 10-K PDF. Filings are free from the SEC:
 [EDGAR full-text search](https://efts.sec.gov/LATEST/search-index?q=10-K) — pick a
 company, open its 10-K, and save the PDF. The examples below use Microsoft's, saved as
 `microsoft-sec-10k.pdf`. Either drop it into `data/` before booting, or upload it from
-the UI sidebar once the app is running.
+the UI sidebar once the app is running. The benchmarks also use Apple's FY2025 10-K,
+saved as `apple-sec-10k.pdf`; Apple's investor site publishes it as a PDF
+([10K-Q4-2025-as-filed.pdf](https://s2.q4cdn.com/470004039/files/doc_earnings/2025/q4/filing/10K-Q4-2025-as-filed.pdf)).
 
 Then boot everything with one command:
 
@@ -596,9 +605,11 @@ Three evaluations, each answering a different question:
 python eval_answers.py
 ```
 
-Runs 31 questions through `router.answer` exactly as the API does: follow-up rewriting,
+Runs 47 questions through `router.answer` exactly as the API does: follow-up rewriting,
 planning, filing choice, calculation or retrieval, reranking and the answer check. It
-scores the final answers against figures checked by hand in Microsoft's FY2024 10-K:
+scores the final answers against figures checked by hand in two filings, Microsoft's
+FY2024 10-K and Apple's FY2025 10-K, both loaded, so a question that names no company is
+answered with both in play:
 - **correct:** every expected figure is in the answer, and nothing that mustn't be;
 - **route:** the expected engine answered;
 - **verified:** no "Not verified" warning;
@@ -611,7 +622,9 @@ The groups:
 - 10 text lookups, including "Microsoft Cloud revenue" (not a breakdown part) and a
   "dividends declared" trap;
 - 4 follow-ups with conversation history;
-- 2 that should be refused: Apple's revenue, and Microsoft's FY2030 revenue.
+- 16 on Apple: 9 calculations (including diluted share count, which tests the share
+  scale), 3 on product and country revenue, 3 text lookups, and a follow-up;
+- 2 that should be refused: Tesla's revenue (no filing) and Microsoft's FY2030 revenue.
 
 It also reports latency, gpt-4o-mini tokens and an estimated cost per question.
 
@@ -620,6 +633,27 @@ It also reports latency, gpt-4o-mini tokens and an estimated cost per question.
 | First run (27 questions) | 22/27 | 24/27 | 27/27 | 27/27 |
 | After the fixes below (two runs) | 27/27 | 27/27 | 27/27 | 27/27 |
 | With breakdowns, 31 questions (two runs) | **31/31** | **31/31** | **31/31** | **31/31** |
+| With Apple, 47 questions (two runs) | **46/47** | **47/47** | **47/47** | **46/47** |
+
+Adding Apple's 10-K exposed four problems that one company had hidden:
+- **No figures at all.** Apple's statements put each column's date on two lines
+  ("September 27," then "2025"), so no header line held two years and every mapping
+  failed verification. Year headers are now read either way.
+- **Share counts 1,000× too large, once that was fixed.** Apple reports shares in
+  thousands while dollars are in millions. The scale note's wording for shares is now
+  read separately.
+- **"United States revenue" answered from text.** Apple prints the country as "U.S.";
+  "U.S.", "US" and "USA" now match "United States".
+- **Citing Apple's printed page numbers.** The model cited "p.22" from the footer
+  "Apple Inc. | 2025 Form 10-K | 22" instead of PDF page 25. The answer check flagged it,
+  and footers like that are now removed from the excerpts the model sees.
+
+The one miss: "short-term unearned revenue" is answered "not found in context". The row
+is retrieved, but its chunk starts below the "June 30, 2024 / 2023" column header, so
+the model can't tell which column is 2024. It answered correctly when only Microsoft was
+loaded. With Apple loaded, the keyword statistics change and so do the other retrieved
+chunks. Narrowed to Microsoft's filing, it answers correctly. Carrying a table's column
+header into each of its chunks at ingest would fix it.
 
 What the first run caught, all answered confidently as calculations:
 - "Intelligent Cloud revenue", "LinkedIn revenue" and the follow-up "And Dynamics?" were
