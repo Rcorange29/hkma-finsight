@@ -14,8 +14,9 @@ FY2025 10-K. Questions that name no company are answered with both loaded:
   - verified: no "Not verified" warning from the answer check
   - cited:    the answer cites a page (refusals excepted)
 
-Also reports latency and gpt-4o-mini tokens per question, with a cost estimate
-at list prices. A run costs about $0.05. Needs both samples in data/
+Also reports latency and tokens per question, with a cost estimate at list
+prices for the models in PRICES. Runs with config.CHAT_MODEL, so a model swap
+is measured, not guessed: CHAT_MODEL=<model> python eval_answers.py. A run costs about $0.05. Needs both samples in data/
 (microsoft-sec-10k.pdf, apple-sec-10k.pdf), ingested (python ingest.py) with
 their figures (python financials.py).
 Results go to answer_eval_results.json.
@@ -34,12 +35,21 @@ from pathlib import Path
 
 from langchain_core.callbacks import get_usage_metadata_callback
 
+import config
 import router
 
 OWNER = "answer-eval"       # sees the public samples only
 RESULTS_PATH = Path("answer_eval_results.json")
-# gpt-4o-mini list prices, USD per million tokens
-PRICE_INPUT, PRICE_CACHED_INPUT, PRICE_OUTPUT = 0.15, 0.075, 0.60
+# List prices, USD per million tokens: (input, cached input, output). Matched by
+# prefix, since usage reports dated names ("gpt-4o-mini-2024-07-18"). Add a row
+# before comparing another model's cost; without one the cost isn't estimated.
+PRICES = {
+    "gpt-4o-mini": (0.15, 0.075, 0.60),
+}
+
+
+def _price(model: str) -> tuple[float, float, float] | None:
+    return next((p for name, p in PRICES.items() if model.startswith(name)), None)
 
 # Phrases that mark an answer as a refusal ("not found in context", ...)
 REFUSAL_MARKERS = (
@@ -176,16 +186,21 @@ def _has(answer: str, wanted: str | tuple[str, ...]) -> bool:
     return any(option in answer for option in options)
 
 
-def _cost(usage: dict) -> tuple[int, int, float]:
+def _cost(usage: dict) -> tuple[int, int, float | None]:
+    """Tokens in and out, and dollars (None if a model used has no price)."""
     tokens_in = tokens_out = 0
-    dollars = 0.0
-    for model in usage.values():
+    dollars: float | None = 0.0
+    for name, model in usage.items():
         cached = (model.get("input_token_details") or {}).get("cache_read", 0) or 0
         tokens_in += model.get("input_tokens", 0)
         tokens_out += model.get("output_tokens", 0)
-        dollars += ((model.get("input_tokens", 0) - cached) * PRICE_INPUT
-                    + cached * PRICE_CACHED_INPUT
-                    + model.get("output_tokens", 0) * PRICE_OUTPUT) / 1e6
+        price = _price(name)
+        if price is None or dollars is None:
+            dollars = None
+            continue
+        dollars += ((model.get("input_tokens", 0) - cached) * price[0]
+                    + cached * price[1]
+                    + model.get("output_tokens", 0) * price[2]) / 1e6
     return tokens_in, tokens_out, dollars
 
 
@@ -212,7 +227,8 @@ def run(case: Case) -> dict:
         "seconds": round(seconds, 2),
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
-        "usd": round(dollars, 5),
+        "usd": None if dollars is None else round(dollars, 5),
+        "model": config.CHAT_MODEL,
     }
 
 
@@ -223,7 +239,15 @@ def _summary(rows: list[dict]) -> str:
             f"verified {count('verified'):>2}/{n}   cited {count('cited'):>2}/{n}")
 
 
+def _cost_line(rows: list[dict]) -> str:
+    if any(r["usd"] is None for r in rows):
+        return f"cost not estimated: add {config.CHAT_MODEL} to PRICES"
+    return (f"mean ${statistics.mean(r['usd'] for r in rows):.4f} "
+            f"(total ${sum(r['usd'] for r in rows):.3f}; embeddings not counted)")
+
+
 def main() -> None:
+    print(f"Model: {config.CHAT_MODEL}\n")
     rows = []
     for case in CASES:
         row = run(case)
@@ -237,8 +261,7 @@ def main() -> None:
     print(f"{'all':<12} ({len(rows):>2})  {_summary(rows)}")
     print(f"\nper question: median {statistics.median(r['seconds'] for r in rows):.1f} s, "
           f"median {statistics.median(r['tokens_in'] for r in rows):,.0f} input tokens, "
-          f"mean ${statistics.mean(r['usd'] for r in rows):.4f} "
-          f"(total ${sum(r['usd'] for r in rows):.3f}; embeddings not counted)")
+          + _cost_line(rows))
     failures = [r for r in rows if not (r["correct"] and r["route_ok"] and r["verified"]
                                         and r["cited"])]
     for r in failures:

@@ -20,13 +20,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 import analysis
+import config
 import financials
 import followup
 import ingest
 import rag
 from ingest import PUBLIC_OWNER
-
-PLANNER_MODEL = "gpt-4o-mini"
 
 # The planner picks from the company-wide metrics only; a part of the company
 # (a segment, an area, a product line) comes through the qualifier, and code
@@ -267,7 +266,7 @@ def plan_question(question: str) -> QuestionPlan:
     metrics = "\n".join(
         f"- {m.key}: {m.name}. {m.description}" for m in PLANNER_METRICS.values()
     )
-    llm = ChatOpenAI(model=PLANNER_MODEL, temperature=0).with_structured_output(QuestionPlan)
+    llm = ChatOpenAI(model=config.CHAT_MODEL, temperature=0).with_structured_output(QuestionPlan)
     return llm.invoke([
         ("system", PLANNER_PROMPT.format(metrics=metrics)),
         ("human", question),

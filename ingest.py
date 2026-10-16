@@ -31,6 +31,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+import config
 import financials
 
 load_dotenv()
@@ -149,7 +150,7 @@ def open_vectorstore() -> Chroma:
     """Open the persisted store, creating it on first write if it doesn't exist."""
     return Chroma(
         persist_directory=str(CHROMA_DIR),
-        embedding_function=OpenAIEmbeddings(model="text-embedding-3-small"),
+        embedding_function=OpenAIEmbeddings(model=config.EMBEDDING_MODEL),
         collection_name=COLLECTION_NAME,
     )
 

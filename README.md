@@ -92,7 +92,8 @@ carries a visible "Not verified against the excerpts" warning naming each proble
 | `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `GET /documents`, `GET /financials`, `GET /usage`, `GET /health`. |
 | `usage.py` | Usage limits: questions and uploads per user per month, questions per minute, and a daily cap across all users. |
 | `app.py` | Streamlit chat UI with expandable source citations and a sidebar for uploading PDFs. |
-| `evaluate.py` | RAGAs evaluation (faithfulness, answer relevancy) with a before/after comparison table. |
+| `evaluate.py` | Optional RAGAs evaluation (faithfulness, answer relevancy) with a before/after comparison table. |
+| `config.py` | The models used: `CHAT_MODEL` for every language-model call, the embedding model and the reranker. |
 | `start.py` | One-command boot: checks config, ingests if needed, starts both servers, opens the browser. |
 
 ---
@@ -328,10 +329,9 @@ Answers drawn from one filing say so under the answer ("Answered from acme-10k.p
 
 **Requirements:** Python 3.10-3.12 and an OpenAI API key.
 
-> Python 3.13+ is not supported yet: `ragas` 0.2.x fails on 3.14's asyncio
-> changes, and one of its dependencies has no wheel for it. The rest of the
-> pipeline (ingest, retrieval, API, UI) runs fine on 3.14 - only `evaluate.py`
-> is affected.
+> CI tests 3.11 and 3.12. The optional RAGAs evaluation (`evaluate.py`,
+> `requirements-ragas.txt`) needs 3.12 or older: `ragas` 0.2.x fails on 3.14's
+> asyncio changes.
 
 ```bash
 git clone https://github.com/dasosis/financial-rag.git
@@ -584,6 +584,13 @@ BM25 parameters, fusion weights and the tokenizer live in `hybrid.py`.
 Chunking is configured in `ingest.py` (`CHUNK_SIZE`, `CHUNK_OVERLAP`). Changing either
 requires a re-ingest: `python start.py --reingest`.
 
+Model names live in `config.py`. Every language-model call uses `CHAT_MODEL`
+(`gpt-4o-mini` by default), which the environment variable of the same name overrides.
+To compare a model, run the benchmark with it:
+`CHAT_MODEL=<model> python eval_answers.py`. Add the model's prices to `PRICES` in
+`eval_answers.py` for a cost estimate. The embedding model is fixed, because changing it
+means re-ingesting.
+
 The only required environment variable is `OPENAI_API_KEY`, read from `.env`. The usage
 limits are optional variables in the same file (see [Usage limits](#usage-limits)).
 
@@ -597,7 +604,12 @@ Three evaluations, each answering a different question:
 | --- | --- | --- |
 | `eval_answers.py` | Whether final answers are right, end to end, across every route | ~$0.03 |
 | `eval_retrieval.py` | Whether search puts the right passage in front of the model | ~$0.15 |
-| `evaluate.py` | RAGAs faithfulness and relevancy of text answers, judged by an LLM | 28 answers plus RAGAs judge calls (not measured) |
+| `evaluate.py` (optional) | RAGAs faithfulness and relevancy of text answers, judged by an LLM | 28 answers plus RAGAs judge calls (not measured) |
+
+`eval_answers.py` is the one to run after a change. It scores every route against
+figures checked by hand. `evaluate.py` came first: it judges only text answers, and it
+marks a correct "not found in context" as unfaithful. Its packages are kept out of
+`requirements.txt` and the Docker image; install `requirements-ragas.txt` to run it.
 
 ### End-to-end answers
 
@@ -672,9 +684,10 @@ Per question, the median is 6.9 seconds and about 16,000 input tokens, and the m
 is about $0.001. Most input tokens are cached by OpenAI, which is why the cost is lower
 than the token count suggests.
 
-### Answer faithfulness (RAGAs)
+### Answer faithfulness (RAGAs, optional)
 
 ```bash
+pip install -r requirements-ragas.txt   # Python 3.12 or older
 python evaluate.py
 ```
 
@@ -848,9 +861,9 @@ label, to keep it open. PRs that change workflow files are left to merge by hand
   retrieval, which won't calculate. Amounts are assumed to be in US dollars, as in SEC
   filings, and a page must state its scale ("in millions") and a year header for its
   figures to be used.
-- Signed-in users can upload and query without limits yet, and each upload and question
-  spends your OpenAI credits. Set a monthly spending cap in your OpenAI account before
-  sharing the app widely.
+- Every upload and question spends your OpenAI credits. [Usage limits](#usage-limits)
+  cap them per user and per day; set a monthly spending cap in your OpenAI account as
+  well.
 - Cognito's built-in email sender only allows a limited number of emails per day
   (sign-up codes and password resets). That's fine for a demo; connect Amazon SES for
   more.

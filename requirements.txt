@@ -21,9 +21,5 @@ httpx>=0.28.1
 python-multipart>=0.0.20   # FastAPI needs it for file uploads
 pydantic>=2.11.3
 
-# Evaluation
-ragas>=0.2.15
-datasets>=3.5.0
-
 # Config
 python-dotenv>=1.1.0

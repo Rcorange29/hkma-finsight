@@ -39,6 +39,7 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import BaseModel, Field
 
+import config
 import hybrid
 from financials import page_number
 from ingest import PUBLIC_OWNER
@@ -53,11 +54,9 @@ KEYWORD_K = 20            # BM25 candidates
 RERANK_CANDIDATES = 30    # fused candidates the cross-encoder scores
 LLM_RERANK_CANDIDATES = 15  # of those, how many the LLM reranker orders
 RERANKER = os.getenv("RERANKER", "llm")   # "llm" or "cross-encoder"
-LLM_RERANK_MODEL = "gpt-4o-mini"
 LLM_RERANK_TIMEOUT = 30   # seconds; on timeout the cross-encoder order is used
 TOP_K = 5                 # final chunks sent to the LLM after reranking
 HYBRID_SEARCH = os.getenv("HYBRID_SEARCH", "1") != "0"
-RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 SYSTEM_PROMPT = """You are a financial analyst assistant. Answer questions using ONLY \
 the retrieved 10-K excerpts provided below.
@@ -90,8 +89,8 @@ def _get_reranker():
     global _reranker
     if _reranker is None:
         from sentence_transformers import CrossEncoder
-        print(f"Loading reranker model {RERANKER_MODEL} …")
-        _reranker = CrossEncoder(RERANKER_MODEL)
+        print(f"Loading reranker model {config.RERANKER_MODEL} …")
+        _reranker = CrossEncoder(config.RERANKER_MODEL)
     return _reranker
 
 
@@ -128,7 +127,7 @@ def llm_rank(question: str, docs: list) -> list[int]:
     """
     passages = "\n\n".join(f"[{n}] {doc_to_context(doc)}" for n, doc in enumerate(docs, 1))
     llm = ChatOpenAI(
-        model=LLM_RERANK_MODEL, temperature=0, timeout=LLM_RERANK_TIMEOUT, max_retries=1
+        model=config.CHAT_MODEL, temperature=0, timeout=LLM_RERANK_TIMEOUT, max_retries=1
     ).with_structured_output(_PassageRanking)
     result = llm.invoke(LLM_RERANK_PROMPT.format(question=question, passages=passages))
     order: list[int] = []
@@ -200,7 +199,7 @@ def _answer_with_docs(question: str, docs: list, problems: list[str] | None = No
     if problems:
         messages.append(("human", RETRY_PROMPT))
     prompt = ChatPromptTemplate.from_messages(messages)
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model=config.CHAT_MODEL, temperature=0)
     chain = (
         {
             "context": RunnableLambda(lambda _: context),
@@ -309,7 +308,7 @@ def _load_vectorstore() -> Chroma:
             f"ChromaDB not found at {CHROMA_DIR.resolve()}. "
             "Run `python ingest.py` first."
         )
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    embeddings = OpenAIEmbeddings(model=config.EMBEDDING_MODEL)
     return Chroma(
         persist_directory=str(CHROMA_DIR),
         embedding_function=embeddings,
