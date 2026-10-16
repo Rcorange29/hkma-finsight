@@ -94,6 +94,17 @@ LINE_ITEMS: dict[str, LineItem] = {
                  "Gross profit, or the dollar row labelled 'Gross margin'. Only if printed."),
         LineItem("research_and_development", "Research and development", "income", "USD", True,
                  "Research and development expense."),
+        # Banks: no cost of revenue; revenue is net interest income plus noninterest revenue
+        LineItem("net_interest_income", "Net interest income", "income", "USD", False,
+                 "Banks: net interest income (interest income minus interest expense), "
+                 "before the provision for credit losses."),
+        LineItem("noninterest_income", "Noninterest revenue", "income", "USD", False,
+                 "Banks: total noninterest revenue / noninterest income (fees, trading and "
+                 "other non-interest revenue)."),
+        LineItem("provision_for_credit_losses", "Provision for credit losses", "income", "USD",
+                 False, "Banks: provision for credit losses / provision for loan losses."),
+        LineItem("noninterest_expense", "Noninterest expense", "income", "USD", True,
+                 "Banks: total noninterest expense (the total row)."),
         LineItem("operating_income", "Operating income", "income", "USD", False,
                  "Operating income / income from operations / operating loss."),
         LineItem("income_before_taxes", "Income before income taxes", "income", "USD", False,
@@ -151,6 +162,10 @@ PRINTED_AS: dict[str, re.Pattern] = {
         "cost_of_revenue": r"\bcosts? of\b",
         "gross_profit": r"\bgross (?:profit|margin)",
         "research_and_development": r"\bresearch\b",
+        "net_interest_income": r"\bnet interest income\b",
+        "noninterest_income": r"\bnon-?interest (?:revenue|income)\b",
+        "provision_for_credit_losses": r"\bprovision\b.*\b(?:credit|loan) loss",
+        "noninterest_expense": r"\bnon-?interest expense",
         "operating_income": r"\boperat",
         "income_before_taxes": r"\bbefore\b.*\btax|\bpre-?tax",
         "income_tax_expense": r"\btax",

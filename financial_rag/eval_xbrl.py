@@ -46,10 +46,16 @@ from financial_rag import analysis, edgar, financials, ingest, rag, router, xbrl
 
 load_dotenv()
 
-DEFAULT_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "KO", "JNJ"]
+# Six companies with conventional statements, then a bank, an insurer, a REIT and a
+# retailer whose 52/53-week year ends in January
+DEFAULT_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "KO", "JNJ", "JPM", "TRV", "O", "TGT"]
 REPORTED = ["revenue", "net_income", "operating_income", "eps_diluted", "total_assets",
-            "operating_cash_flow"]
-DERIVED = ["operating_margin", "net_margin", "free_cash_flow", "current_ratio"]
+            "operating_cash_flow",
+            # Banks' line items; asked only of companies that tag them
+            "net_interest_income", "noninterest_income", "provision_for_credit_losses",
+            "noninterest_expense"]
+DERIVED = ["operating_margin", "net_margin", "free_cash_flow", "current_ratio",
+           "efficiency_ratio"]
 STORE = Path("chroma_db") / "eval_xbrl"
 OWNER = "xbrl-eval"
 _CITATION = re.compile(r"\.(?:pdf|html?), p\.")
