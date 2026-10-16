@@ -59,6 +59,10 @@ STRICT RULES — follow these exactly:
 3. Do not add commentary, context, or assumptions beyond what is directly stated.
 4. After each claim, cite the source document and page in parentheses, \
    e.g. (microsoft-sec-10k.pdf, p.66).
+5. The excerpts may come from more than one filing, each named in its Source line. \
+   If more than one filing answers the question, answer for each one separately \
+   under its company or file name; never merge, combine or compare figures across \
+   filings unless the question asks you to.
 
 Context excerpts:
 {context}
@@ -104,6 +108,8 @@ def doc_to_context(doc) -> str:
     """
     meta = doc.metadata
     source = meta.get("source_file", meta.get("source", "unknown"))
+    if meta.get("company"):
+        source = f"{source} ({meta['company']})"
     page = meta.get("page", "?")
     return f"Source: {source}, Page: {page}\n{doc.page_content}"
 
@@ -185,14 +191,40 @@ def _visible(meta: dict, owner: str | None) -> bool:
     return owner is None or meta.get("owner") in (owner, PUBLIC_OWNER)
 
 
-def _keyword_corpus(vectorstore: Chroma, owner: str | None) -> list[tuple[Document, hybrid.Indexed]]:
+@dataclass(frozen=True)
+class Scope:
     """
-    Every chunk the owner may see, with its BM25 term counts.
+    The chunks one search may see: the owner's filings plus the public samples,
+    narrowed to a single filing when `filing` is set. A filing is (its owner,
+    its source_file), and must itself be visible to the owner.
+    """
+    owner: str | None
+    filing: tuple[str, str] | None = None
 
-    Scope comes from the same owner_filter as the semantic search, applied by
-    Chroma, so the keyword path can't surface another user's chunks either.
+    def __post_init__(self):
+        if self.filing and not _visible({"owner": self.filing[0]}, self.owner):
+            raise ValueError("That filing belongs to another user.")
+
+    def where(self) -> dict | None:
+        if self.filing is None:
+            return owner_filter(self.owner)
+        file_owner, name = self.filing
+        return {"$and": [{"owner": file_owner}, {"source_file": name}]}
+
+    def contains(self, meta: dict) -> bool:
+        if self.filing is not None:
+            return (meta.get("owner"), meta.get("source_file")) == self.filing
+        return _visible(meta, self.owner)
+
+
+def _keyword_corpus(vectorstore: Chroma, scope: Scope) -> list[tuple[Document, hybrid.Indexed]]:
     """
-    ids = vectorstore.get(where=owner_filter(owner), include=[])["ids"]
+    Every chunk in scope, with its BM25 term counts.
+
+    Scope is applied by Chroma with the same filter as the semantic search, so
+    the keyword path can't surface another user's chunks either.
+    """
+    ids = vectorstore.get(where=scope.where(), include=[])["ids"]
     with _corpora_lock:
         cache = _corpora.setdefault(vectorstore._collection.id, {})
         missing = [i for i in ids if i not in cache]
@@ -209,14 +241,14 @@ def _keyword_corpus(vectorstore: Chroma, owner: str | None) -> list[tuple[Docume
         # Forget chunks in this scope that the store no longer has (replaced filings)
         present = set(ids)
         for cid in [c for c, (doc, _) in cache.items()
-                    if c not in present and _visible(doc.metadata, owner)]:
+                    if c not in present and scope.contains(doc.metadata)]:
             del cache[cid]
         return [cache[i] for i in ids if i in cache]
 
 
-def _keyword_search(profile: hybrid.QueryProfile, vectorstore: Chroma, owner: str | None):
+def _keyword_search(profile: hybrid.QueryProfile, vectorstore: Chroma, scope: Scope):
     """Top KEYWORD_K chunks by BM25 as (chunk, score, matched terms); no-match chunks dropped."""
-    corpus = _keyword_corpus(vectorstore, owner)
+    corpus = _keyword_corpus(vectorstore, scope)
     scores = hybrid.bm25_scores(profile.terms, [indexed for _, indexed in corpus])
     ranked = sorted(
         ((score, doc, indexed) for score, (doc, indexed) in zip(scores, corpus, strict=True)
@@ -231,7 +263,11 @@ def _keyword_search(profile: hybrid.QueryProfile, vectorstore: Chroma, owner: st
 
 
 def retrieve_and_rerank(
-    question: str, vectorstore: Chroma, owner: str | None = None, keyword: bool | None = None
+    question: str,
+    vectorstore: Chroma,
+    owner: str | None = None,
+    keyword: bool | None = None,
+    filing: tuple[str, str] | None = None,
 ) -> list:
     """
     Hybrid retrieval for the chunks the owner may see; see the module docstring.
@@ -240,16 +276,18 @@ def retrieve_and_rerank(
     whose metadata["retrieval"] records how it was found: chunk_id, matched_by
     ("semantic" and/or "keyword"), each search's rank and score, the query terms
     it matched, and the cross-encoder score. `keyword` overrides HYBRID_SEARCH.
+    `filing` = (owner, source_file) searches that one filing only.
     """
     keyword = HYBRID_SEARCH if keyword is None else keyword
     profile = hybrid.profile_query(question)
+    scope = Scope(owner, filing)
 
     # Semantic retrieval with relevance scores (0 = dissimilar, 1 = identical)
     scored = vectorstore.similarity_search_with_relevance_scores(
-        question, k=RETRIEVE_K, filter=owner_filter(owner)
+        question, k=RETRIEVE_K, filter=scope.where()
     )
     semantic = [(doc, score) for doc, score in scored if score >= SCORE_THRESHOLD]
-    lexical = _keyword_search(profile, vectorstore, owner) if keyword else []
+    lexical = _keyword_search(profile, vectorstore, scope) if keyword else []
 
     docs: dict[str, Document] = {}
     trace: dict[str, dict] = {}
@@ -308,9 +346,12 @@ def retrieve_and_rerank(
 # Public API
 # ---------------------------------------------------------------------------
 
-def query(question: str, owner: str | None = None) -> RAGResponse:
+def query(
+    question: str, owner: str | None = None, filing: tuple[str, str] | None = None
+) -> RAGResponse:
+    """Answer from the owner's filings and the samples, or from one `filing` only."""
     vectorstore = _load_vectorstore()
-    top_docs = retrieve_and_rerank(question, vectorstore, owner)
+    top_docs = retrieve_and_rerank(question, vectorstore, owner, filing=filing)
 
     if not top_docs:
         return RAGResponse(

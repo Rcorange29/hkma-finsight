@@ -61,6 +61,15 @@ def _md(text: str) -> str:
     return text.replace("$", "\\$")
 
 
+ALL_FILINGS = "All filings"
+
+
+def _doc_line(doc: dict) -> str:
+    """'Microsoft Corporation · 155 chunks · 59 figures'"""
+    stats = _doc_stats(doc)
+    return f"{doc['company']} · {stats}" if doc.get("company") else stats
+
+
 def _doc_stats(doc: dict) -> str:
     """'155 chunks · 66 figures': figures feed the calculation engine."""
     stats = f"{doc['chunks']} chunks"
@@ -165,18 +174,38 @@ with st.sidebar:
     st.caption("Your filings")
     if own:
         for doc in own:
-            st.markdown(f"- **{doc['source_file']}** — {_doc_stats(doc)}")
+            st.markdown(f"- **{doc['source_file']}** — {_doc_line(doc)}")
     else:
         st.info("You haven't uploaded any filings yet.")
     if shared:
         st.caption("Sample filings (available to everyone)")
         for doc in shared:
-            st.markdown(f"- **{doc['source_file']}** — {_doc_stats(doc)}")
+            st.markdown(f"- **{doc['source_file']}** — {_doc_line(doc)}")
+
+    # Which filing questions are about. A user's own file shadows a sample of
+    # the same name, as it does in the API.
+    companies = {}
+    for doc in shared + own:
+        companies[doc["source_file"]] = doc.get("company")
+    choices = [ALL_FILINGS, *sorted(companies)]
+    if st.session_state.get("ask_about") not in choices:
+        st.session_state.ask_about = ALL_FILINGS
+    st.selectbox(
+        "Ask about",
+        choices,
+        key="ask_about",
+        format_func=lambda name: name if name == ALL_FILINGS or not companies.get(name)
+        else f"{companies[name]} ({name})",
+        help="Answer from one filing only. With all filings, naming a company in the "
+             "question narrows the search to its filing.",
+    )
 
 # Render existing chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(_md(msg["content"]))
+        if msg.get("filing"):
+            st.caption(f"Answered from {msg['filing']} only.")
         if msg["role"] == "assistant" and msg.get("sources"):
             _render_sources(msg["sources"], expanded=False)
 
@@ -191,9 +220,13 @@ if question := st.chat_input("Ask a question about the financial reports …"):
     with st.chat_message("assistant"):
         with st.spinner("Retrieving relevant passages and generating answer …"):
             try:
+                ask_about = st.session_state.get("ask_about", ALL_FILINGS)
                 response = httpx.post(
                     f"{API_BASE_URL}/query",
-                    json={"question": question},
+                    json={
+                        "question": question,
+                        "source_file": None if ask_about == ALL_FILINGS else ask_about,
+                    },
                     headers=HEADERS,
                     timeout=60.0,
                 )
@@ -201,26 +234,32 @@ if question := st.chat_input("Ask a question about the financial reports …"):
                 data = response.json()
                 answer = data["answer"]
                 sources = data.get("sources", [])
+                filing = data.get("filing")
             except httpx.ConnectError:
                 answer = (
                     "Could not connect to the API server. "
                     "Make sure `uvicorn api:app --reload --port 8000` is running."
                 )
                 sources = []
+                filing = None
             except httpx.HTTPStatusError as exc:
                 detail = exc.response.json().get("detail", str(exc))
                 answer = f"API error ({exc.response.status_code}): {detail}"
                 sources = []
+                filing = None
             except Exception as exc:
                 answer = f"Unexpected error: {exc}"
                 sources = []
+                filing = None
 
         st.markdown(_md(answer))
+        if filing:
+            st.caption(f"Answered from {filing} only.")
 
         if sources:
             _render_sources(sources, expanded=True)
 
     # Persist assistant message
     st.session_state.messages.append(
-        {"role": "assistant", "content": answer, "sources": sources}
+        {"role": "assistant", "content": answer, "sources": sources, "filing": filing}
     )

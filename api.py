@@ -53,6 +53,9 @@ app = FastAPI(
 
 class QueryRequest(BaseModel):
     question: str
+    # Ask about this one filing only (a name from GET /documents). Without it, the
+    # question's own wording decides: naming a company narrows to its filing.
+    source_file: str | None = None
 
 
 class RetrievalTrace(BaseModel):
@@ -108,6 +111,7 @@ class QueryResponse(BaseModel):
     sources: list[SourceCitation]
     route: str = "text"     # "calculation" or "text"
     calculations: list[Calculation] = []
+    filing: str | None = None   # the one filing the answer was drawn from, if narrowed
 
 
 class DocumentInfo(BaseModel):
@@ -115,6 +119,7 @@ class DocumentInfo(BaseModel):
     chunks: int
     figures: int = 0        # structured figures extracted for the analysis engine
     shared: bool = False    # True for public sample filings every user sees
+    company: str | None = None   # registrant named on the cover page
 
 
 class FigureList(BaseModel):
@@ -169,7 +174,9 @@ def query_endpoint(request: QueryRequest, owner: str = Depends(current_owner)):
     if not request.question.strip():
         raise HTTPException(status_code=422, detail="Question must not be empty.")
     try:
-        result = router.answer(request.question, owner)
+        result = router.answer(request.question, owner, request.source_file)
+    except router.UnknownFiling as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -192,25 +199,24 @@ def query_endpoint(request: QueryRequest, owner: str = Depends(current_owner)):
         sources=[SourceCitation(**s) for s in result.sources],
         route=result.route,
         calculations=calculations,
+        filing=result.filing,
     )
 
 
 @app.get("/documents", response_model=DocumentList)
 def list_documents(owner: str = Depends(current_owner)):
-    own = ingest.list_documents(owner)
-    shared = ingest.list_documents(ingest.PUBLIC_OWNER)
-    own_figures = financials.count_facts(owner)
-    shared_figures = financials.count_facts(ingest.PUBLIC_OWNER)
-    return DocumentList(
-        documents=[
-            DocumentInfo(source_file=n, chunks=c, figures=own_figures.get(n, 0))
-            for n, c in own.items()
-        ]
-        + [
-            DocumentInfo(source_file=n, chunks=c, figures=shared_figures.get(n, 0), shared=True)
-            for n, c in shared.items()
-        ]
-    )
+    figures = {
+        who: financials.count_facts(who) for who in (owner, ingest.PUBLIC_OWNER)
+    }
+    filings = ingest.filings([owner, ingest.PUBLIC_OWNER])
+    # The caller's own filings first, then the shared samples
+    filings.sort(key=lambda f: f.owner != owner)
+    return DocumentList(documents=[
+        DocumentInfo(source_file=f.source_file, chunks=f.chunks,
+                     figures=figures[f.owner].get(f.source_file, 0),
+                     shared=f.owner != owner, company=f.company)
+        for f in filings
+    ])
 
 
 @app.get("/financials", response_model=FigureList)
@@ -252,6 +258,10 @@ def upload_document(file: UploadFile, owner: str = Depends(current_owner)):
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Ingestion error: {exc}") from exc
 
+    company = next(
+        (f.company for f in ingest.filings([owner]) if f.source_file == name), None
+    )
     return DocumentInfo(
-        source_file=name, chunks=chunks, figures=financials.count_facts(owner).get(name, 0)
+        source_file=name, chunks=chunks, figures=financials.count_facts(owner).get(name, 0),
+        company=company,
     )

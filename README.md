@@ -70,7 +70,7 @@ requires a `(file.pdf, p.NN)` citation after each claim. Anything missing comes 
 | `ingest.py` | Loads PDFs from `data/`, chunks them (1024 tokens / 128 overlap, table-aware), embeds and persists to ChromaDB. |
 | `financials.py` | Extracts the income statement, balance sheet and cash flow statement into verified, cited figures; stores them in SQLite. |
 | `analysis.py` | Deterministic calculations (margins, ratios, returns, growth, YoY, CAGR) over those figures, and the cited write-up. |
-| `router.py` | Plans each question and sends it to the analysis engine or to text retrieval. |
+| `router.py` | Plans each question, narrows it to the filing it names, and sends it to the analysis engine or to text retrieval. |
 | `rag.py` | Hybrid retrieval, score-threshold filtering, cross-encoder reranking, prompting. Exposes `query()`. |
 | `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
 | `eval_retrieval.py` | Retrieval benchmark: semantic-only vs hybrid, scored on whether the right figure is retrieved. |
@@ -139,8 +139,9 @@ nothing in the plan can be computed (with the reason stated first), the question
 text retrieval. "Why did operating margin improve?" and segment questions ("How fast did
 Azure grow?") go to retrieval: they're explanations or figures outside the statements.
 Routing is the one model-dependent step, so it has its own opt-in test
-(`tests/test_planner_live.py`); it routed 20 of 20 representative questions correctly in
-three consecutive runs.
+(`tests/test_planner_live.py`). It routed 20 of 20 representative questions correctly in
+three consecutive runs, and still does now that it also extracts the company a question
+names (28 of 28 cases including those, three runs in a row).
 
 Figures are stored in `chroma_db/financials.sqlite3`, scoped by owner exactly like the
 text chunks: users see their own filings' figures and the shared samples', never another
@@ -197,6 +198,38 @@ applied by Chroma before any scoring. Term statistics come only from chunks the 
 may see, so one user's filings never influence another's results. Tests cover both.
 
 `HYBRID_SEARCH=0` switches back to the semantic-only pipeline, unchanged from before.
+
+---
+
+## Which filing a question is about
+
+Every user sees the shared Microsoft sample alongside their own uploads. Without care,
+"What was revenue in 2024?" from someone who uploaded another company's 10-K would mix
+two companies' passages, and the model would have to guess which figure to give.
+
+- **Company names.** Each filing's company is read from its cover page: the line above
+  "(Exact name of registrant as specified in its charter)", or after "Commission File
+  Number" on covers like Microsoft's. The sidebar and `GET /documents` show it. Filings
+  ingested earlier get it the first time they're listed, with no re-ingest.
+- **Naming a company narrows the search.** The planner copies the company a question
+  names ("Acme's risks" → "Acme"; a product such as "Azure" gives "Microsoft"). Code then
+  matches that name to a filing by the distinctive words in its company and file names.
+  Both routes then use only that filing: the analysis engine's figures, and both halves
+  of hybrid retrieval. Names that match no filing, or several, narrow nothing.
+  - The planner isn't shown the filing list. Given one, gpt-4o-mini filled in a company
+    for questions that named none, such as "What was net income in fiscal 2024?". With
+    only extraction asked of it, the opt-in live test
+    (`RUN_LIVE_TESTS=1 pytest tests/test_planner_live.py`) passed 28 of 28 cases, three
+    runs in a row. Those cases are the 20 routing questions plus 8 on which filing to use.
+- **Or pick one.** The sidebar's **Ask about** picker (`source_file` in `POST /query`)
+  limits every answer to one filing, whatever the question says. A user's own file shadows
+  a sample of the same name, and a filing the caller can't see is refused with `404`.
+- **Several filings, one answer.** When a question names no company, every filing is
+  searched. The prompt then requires the model to answer for each filing separately under
+  its company name and never merge figures across filings. Each excerpt's Source line
+  names its company, for filings ingested after this change.
+
+Answers drawn from one filing say so under the answer ("Answered from acme-10k.pdf only.").
 
 ---
 
@@ -368,8 +401,14 @@ Other questions return `"route": "text"`, an empty `calculations` list, and the
 retrieved passages as `sources`. Each of those carries a `retrieval` record of how its
 chunk was found; see [Hybrid retrieval](#hybrid-retrieval).
 
-Status codes: `422` empty question · `503` vector store missing (run `ingest.py` or
-upload a PDF) · `500` inference error. `GET /health` returns `{"status": "ok"}`.
+Add `"source_file": "acme-10k.pdf"` to the request to answer from that one filing. Without
+it, a question that names a company is narrowed to that company's filing. `filing` in the
+response names the one filing an answer was drawn from, or is `null` if it drew on all of
+them; see [Which filing a question is about](#which-filing-a-question-is-about).
+
+Status codes: `422` empty question · `404` `source_file` isn't one of the caller's
+filings or a sample · `503` vector store missing (run `ingest.py` or upload a PDF) ·
+`500` inference error. `GET /health` returns `{"status": "ok"}`.
 
 `POST /documents` — upload a PDF (multipart field `file`, max 50 MB)
 
@@ -378,7 +417,8 @@ curl -X POST http://localhost:8000/documents -H "X-User-Id: local" -F "file=@mic
 ```
 
 ```json
-{"source_file": "microsoft-sec-10k.pdf", "chunks": 155, "figures": 59, "shared": false}
+{"source_file": "microsoft-sec-10k.pdf", "chunks": 155, "figures": 59, "shared": false,
+ "company": "Microsoft Corporation"}
 ```
 
 The filename is reduced to a safe basename (`[A-Za-z0-9._-]`), which is what citations
@@ -386,8 +426,9 @@ show. Status codes: `201` indexed · `413` too large · `415` not a PDF · `422`
 extractable text or unreadable PDF · `500` ingestion error.
 
 `GET /documents` lists the caller's files and the shared samples (`"shared": true`), with
-the number of structured figures extracted from each:
-`{"documents": [{"source_file": "…", "chunks": 155, "figures": 59, "shared": false}]}`.
+the number of structured figures extracted from each and the company named on its cover
+page (`null` if none was found):
+`{"documents": [{"source_file": "…", "chunks": 155, "figures": 59, "shared": false, "company": "…"}]}`.
 
 `GET /financials` (optional `?source_file=`) lists those figures, each with its value,
 fiscal year, page and the row as printed: `{"figures": [{"metric": "revenue", …}]}`.
@@ -530,7 +571,10 @@ Tests cover:
     formula fallbacks, missing inputs, zero denominators, YoY and CAGR, and that every
     input is cited in the answer;
   - **routing**: calculation vs. text, fallbacks, and that the planner and engine only see
-    the caller's figures.
+    the caller's figures;
+- which filing a question is about: company names from cover pages, matching a named
+  company to a filing, narrowing both routes to it, the picked filing overriding the
+  question, own files shadowing samples, and refusing filings the caller can't see.
 
 None need an API key or network access. The planner's routing on real questions is an
 opt-in test that calls OpenAI:

@@ -12,12 +12,12 @@ import os
 import pytest
 
 import router
+from ingest import Filing
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_LIVE_TESTS") != "1", reason="calls OpenAI; set RUN_LIVE_TESTS=1"
 )
 
-DOCUMENTS = {"msft.pdf": "- msft.pdf (sample filing): fiscal years 2022-2024"}
 
 # question -> (route, metrics, fiscal_years, year_over_year); None = don't care
 CASES = {
@@ -49,7 +49,7 @@ CASES = {
 @pytest.mark.parametrize("question", list(CASES))
 def test_planner_routes_question(question):
     route, metrics, years, yoy = CASES[question]
-    plan = router.plan_question(question, DOCUMENTS)
+    plan = router.plan_question(question)
     assert plan.route == route
     if metrics is not None:
         assert set(plan.metrics) == metrics
@@ -57,3 +57,29 @@ def test_planner_routes_question(question):
         assert sorted(plan.fiscal_years) == years
     if yoy is not None:
         assert plan.year_over_year == yoy
+
+
+# question -> (route, filing it should narrow to), with these two filings visible
+WHICH_FILING = {
+    "What risks does Acme describe?": ("text", "acme-10k.pdf"),
+    "What was Microsoft's operating margin in 2024?": ("calculation", "msft.pdf"),
+    "How did Acme Holdings' revenue change from 2023?": ("calculation", "acme-10k.pdf"),
+    "Who is Microsoft's auditor?": ("text", "msft.pdf"),
+    "How fast did Azure grow?": ("text", "msft.pdf"),          # a product names its company
+    "What was net income in fiscal 2024?": ("calculation", None),
+    "What are the main risk factors?": ("text", None),
+    "What was Apple's revenue?": (None, None),                 # not listed: nothing narrowed
+}
+FILINGS = {
+    "msft.pdf": Filing("msft.pdf", "public", 1, "Microsoft Corporation"),
+    "acme-10k.pdf": Filing("acme-10k.pdf", "alice", 1, "Acme Holdings, Inc."),
+}
+
+
+@pytest.mark.parametrize("question", list(WHICH_FILING))
+def test_planner_picks_the_filing_a_question_names(question):
+    route, filing = WHICH_FILING[question]
+    plan = router.plan_question(question)
+    if route is not None:
+        assert plan.route == route
+    assert router.match_filing(plan.company, FILINGS) == filing
