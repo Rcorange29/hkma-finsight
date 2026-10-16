@@ -6,13 +6,16 @@ and querying, and the store tests run against a real ChromaDB in a temp dir
 with fake embeddings and a fake reranker.
 """
 
+from decimal import Decimal
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 from langchain_core.embeddings import DeterministicFakeEmbedding
 
-from financial_rag import api, ingest, rag
+from financial_rag import api, financials, ingest, rag
+from financial_rag.financials import Fact
 
 PDF_BYTES = b"%PDF-1.7\n fake body"
 ALICE = "0f8b1c2e-alice"
@@ -330,9 +333,29 @@ def test_main_ingests_public_samples_and_each_users_uploads(
     calls = []
     monkeypatch.setattr(ingest, "ingest_file", lambda path, owner: calls.append((path.name, owner)))
 
-    ingest.main()
+    ingest.main([])
 
     assert calls == [("sample.pdf", ingest.PUBLIC_OWNER), ("mine.pdf", ALICE)]
+
+
+def test_main_removes_samples_no_longer_in_data(store, data_dir, tmp_path, monkeypatch):
+    # The PDF samples were replaced by the HTML 10-Ks: the PDFs' chunks and figures go
+    _fake_pdf(monkeypatch, ["Total revenue 245,122"])
+    ingest.ingest_file(tmp_path / "old-sample.pdf", ingest.PUBLIC_OWNER)
+    ingest.ingest_file(tmp_path / "mine.pdf", ALICE)
+    financials.replace_facts(ingest.PUBLIC_OWNER, "old-sample.pdf", [Fact(
+        ingest.PUBLIC_OWNER, "old-sample.pdf", "revenue", 2024, Decimal(1), "USD", "Revenue",
+        0, "Revenue 1")])
+    data_dir.mkdir()
+    (data_dir / "new-sample.htm").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.setattr(ingest, "ingest_file", lambda path, owner: None)
+
+    ingest.main([])
+
+    assert ingest.list_documents(ingest.PUBLIC_OWNER) == {}
+    assert financials.load_facts([ingest.PUBLIC_OWNER]) == []
+    # Another owner's file of any name is never pruned
+    assert "mine.pdf" in ingest.list_documents(ALICE)
 
 
 @pytest.mark.filterwarnings("ignore:Relevance scores must be between 0 and 1")

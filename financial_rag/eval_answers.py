@@ -18,9 +18,9 @@ Also reports latency and tokens per question, with a cost estimate at list
 prices for the models in PRICES. Runs with config.CHAT_MODEL, so a model swap
 is measured, not guessed: CHAT_MODEL=<model> python -m financial_rag.eval_answers.
 
-A run costs about $0.05. Needs both samples in data/ (microsoft-sec-10k.pdf,
-apple-sec-10k.pdf), ingested (python -m financial_rag.ingest) with their
-figures (python -m financial_rag.financials). Results go to
+A run costs about $0.05. Needs both samples in data/ (microsoft-sec-10k.htm,
+apple-sec-10k.htm), fetched and ingested with their figures
+(python -m financial_rag.ingest --fetch-samples). Results go to
 answer_eval_results.json.
 
 Usage:
@@ -40,7 +40,7 @@ from langchain_core.callbacks import get_usage_metadata_callback
 
 from financial_rag import config, router
 
-# A page citation from a PDF or an EDGAR HTML filing: (apple-sec-10k.pdf, p.32)
+# A page citation from a PDF or an EDGAR HTML filing: (apple-sec-10k.htm, p.31)
 _CITATION = re.compile(r"\.(?:pdf|html?), p\.")
 
 OWNER = "answer-eval"       # sees the public samples only
@@ -65,27 +65,27 @@ REFUSAL_MARKERS = (
 
 NET_INCOME_2024 = [
     ("user", "What was Microsoft's net income in fiscal 2024?"),
-    ("assistant", "**Net income** · microsoft-sec-10k.pdf\n- **FY2024: $88,136 million** "
-                  "(microsoft-sec-10k.pdf, p.67)"),
+    ("assistant", "**Net income** · microsoft-sec-10k.htm\n- **FY2024: $88,136 million** "
+                  "(microsoft-sec-10k.htm, p.56)"),
 ]
 REVENUE_2024 = [
     ("user", "What was total revenue in fiscal 2024?"),
-    ("assistant", "**Total revenue** · microsoft-sec-10k.pdf\n- **FY2024: $245,122 million** "
-                  "(microsoft-sec-10k.pdf, p.67)"),
+    ("assistant", "**Total revenue** · microsoft-sec-10k.htm\n- **FY2024: $245,122 million** "
+                  "(microsoft-sec-10k.htm, p.56)"),
 ]
 LINKEDIN_2024 = [
     ("user", "What was LinkedIn revenue in fiscal 2024?"),
-    ("assistant", "LinkedIn revenue was $16,372 million in fiscal 2024 (microsoft-sec-10k.pdf, p.114)."),
+    ("assistant", "LinkedIn revenue was $16,372 million in fiscal 2024 (microsoft-sec-10k.htm, p.93)."),
 ]
 APPLE_NET_INCOME_2025 = [
     ("user", "What was Apple's net income in fiscal 2025?"),
-    ("assistant", "**Net income** · apple-sec-10k.pdf\n- **FY2025: $112,010 million** "
-                  "(apple-sec-10k.pdf, p.32)"),
+    ("assistant", "**Net income** · apple-sec-10k.htm\n- **FY2025: $112,010 million** "
+                  "(apple-sec-10k.htm, p.31)"),
 ]
 EMPLOYEES = [
     ("user", "How many people did Microsoft employ as of June 30, 2024?"),
     ("assistant", "As of June 30, 2024, Microsoft employed approximately 228,000 people on a "
-                  "full-time basis (microsoft-sec-10k.pdf, p.12)."),
+                  "full-time basis (microsoft-sec-10k.htm, p.8)."),
 ]
 
 
