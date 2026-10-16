@@ -363,6 +363,63 @@ def test_extract_facts_skips_the_model_when_no_statement_pages_exist():
     assert extract_facts({1: "Risk factors\nprose only"}, "x.pdf", "public", mapper=boom) == []
 
 
+# Target's statements, as html_filing reads them: the income statement names the
+# year to January 31, 2026 "2025"; the balance sheet is dated
+TARGET_INCOME = """Consolidated Statements of Operations
+(millions, except per share data) 2025 2024 2023
+Net sales $ 104,780 $ 106,566 $ 107,412
+Cost of sales 75,511 76,502 77,828
+Operating income 5,117 5,566 5,707
+Net earnings $ 3,705 $ 4,091 $ 4,138
+"""
+TARGET_BALANCE = """Consolidated Statements of Financial Position
+(millions, except footnotes) January 31, 2026 February 1, 2025
+Cash and cash equivalents $ 5,488 $ 4,762
+Inventory 12,304 12,740
+Total current assets 20,005 19,454
+Total assets $ 59,490 $ 57,769
+Total current liabilities 21,230 20,799
+Total shareholders' investment 16,165 14,666
+"""
+TARGET_CASH = """Consolidated Statements of Cash Flows
+(millions) 2025 2024 2023
+Net earnings $ 3,705 $ 4,091 $ 4,138
+Depreciation and amortization 3,134 2,981 2,801
+Cash provided by operating activities 6,562 7,367 8,621
+Expenditures for property and equipment ( 3,727 ) ( 2,891 ) ( 4,806 )
+Dividends paid ( 2,053 ) ( 2,046 ) ( 2,011 )
+Cash used in investing activities ( 3,649 ) ( 2,860 ) ( 4,760 )
+"""
+
+
+def test_balance_sheet_years_follow_the_income_statements_names():
+    pages = {45: TARGET_INCOME, 47: TARGET_BALANCE, 48: TARGET_CASH}
+    facts = extract_facts(pages, "tgt.htm", "public", mapper=_mapper(
+        dict(metric="revenue", page=45, label="Net sales", value="104,780", fiscal_year=2025),
+        dict(metric="total_assets", page=47, label="Total assets", value="59,490",
+             fiscal_year=2026),
+        dict(metric="operating_cash_flow", page=48, label="Cash provided by operating activities",
+             value="6,562", fiscal_year=2025),
+    ))
+    got = {(f.metric, f.fiscal_year): f.value for f in facts}
+    assert got[("revenue", 2025)] == Decimal("104780000000")
+    # The balance at January 31, 2026 closes the year Target calls 2025
+    assert got[("total_assets", 2025)] == Decimal("59490000000")
+    assert got[("total_assets", 2024)] == Decimal("57769000000")
+    assert ("total_assets", 2026) not in got
+
+
+def test_balance_sheet_years_stay_when_the_statements_agree():
+    facts = extract_facts(PAGES, "msft.pdf", "public", mapper=_mapper(
+        dict(metric="revenue", page=66, label="Total revenue", value="245,122", fiscal_year=2024),
+        dict(metric="total_assets", page=68, label="Total assets", value="512,163",
+             fiscal_year=2024),
+    ))
+    assert {(f.metric, f.fiscal_year) for f in facts} == {
+        ("revenue", 2024), ("revenue", 2023), ("revenue", 2022),
+        ("total_assets", 2024), ("total_assets", 2023)}
+
+
 # ---------------------------------------------------------------------------
 # Storage
 # ---------------------------------------------------------------------------
