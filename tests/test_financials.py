@@ -491,8 +491,30 @@ def test_a_breakdown_that_does_not_add_up_is_dropped():
     assert facts == []
 
 
-def test_a_breakdown_missing_a_part_is_dropped_whole():
+def test_a_skipped_part_is_completed_by_the_one_row_that_fills_the_gap():
+    # The model skipped More Personal Computing; only its revenue row (not its
+    # operating income row) makes the parts add up in all three years
     facts = financials.extract_breakdowns({112: SEGMENTS}, "msft.pdf", "public", _totals(),
+                                          mapper=_parts(*_segment_rows("segment_revenue",
+                                                                       REVENUE_ROWS[:2])))
+    by = {(f.segment, f.fiscal_year): f for f in facts}
+    assert len(facts) == 9
+    assert by[("More Personal Computing", 2022)].value == Decimal(59941) * M
+    assert by[("More Personal Computing", 2024)].line == (
+        "More Personal Computing   62,032    54,734    59,941")
+
+
+def test_a_breakdown_missing_two_parts_is_dropped_whole():
+    # No single row fills a gap made of two parts
+    facts = financials.extract_breakdowns({112: SEGMENTS}, "msft.pdf", "public", _totals(),
+                                          mapper=_parts(*_segment_rows("segment_revenue",
+                                                                       REVENUE_ROWS[:1])))
+    assert facts == []
+
+
+def test_a_gap_two_rows_could_fill_is_not_guessed():
+    page = SEGMENTS + "Copy of a part   62,032    54,734    59,941\n"
+    facts = financials.extract_breakdowns({112: page}, "msft.pdf", "public", _totals(),
                                           mapper=_parts(*_segment_rows("segment_revenue",
                                                                        REVENUE_ROWS[:2])))
     assert facts == []

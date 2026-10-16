@@ -11,6 +11,8 @@ sentence-transformers>=5.7.0
 
 # Document loading
 pypdf>=6.16.1
+beautifulsoup4>=4.12      # EDGAR HTML 10-Ks (html_filing.py)
+lxml>=5.2
 
 # Serving
 fastapi>=0.115.12

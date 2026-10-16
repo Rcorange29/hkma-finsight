@@ -84,7 +84,8 @@ relative paths.
 
 | File | Role |
 | --- | --- |
-| `ingest.py` | Loads PDFs from `data/`, chunks them (1024 tokens / 128 overlap, table-aware), embeds and persists to ChromaDB. |
+| `ingest.py` | Loads filings (PDF, or EDGAR's HTML 10-K) from `data/`, chunks them (1024 tokens / 128 overlap, table-aware), embeds and persists to ChromaDB. |
+| `html_filing.py` | Reads EDGAR's HTML 10-K: pages at the filing's page breaks, one line per table row, and each table's column headings. |
 | `financials.py` | Extracts the income statement, balance sheet and cash flow statement into verified, cited figures; stores them in SQLite. |
 | `analysis.py` | Deterministic calculations (margins, ratios, returns, growth, YoY, CAGR) over those figures, and the cited write-up. |
 | `router.py` | Plans each question, narrows it to the filing it names, and sends it to the analysis engine or to text retrieval. |
@@ -242,6 +243,41 @@ python -m financial_rag.financials data/some-10k.pdf  # print what would be extr
 ```
 
 ---
+
+## EDGAR HTML filings
+
+A 10-K is filed with the SEC as HTML with inline XBRL, and that version keeps what a PDF's
+text loses: which cells form a row, and which heading sits over which column.
+`html_filing.py` reads it into the same shape as a PDF's pages:
+- **Pages** split where the filing breaks pages, so citations keep page numbers. These are
+  the filing's own pages, not a PDF's.
+- **Tables:** one line per table row, so the figure extractor reads HTML statements with no
+  changes. Hidden content (the XBRL header) is skipped.
+- **Column headings:** each table's headings are recorded. A chunk that holds a table's rows
+  but not its headings gets them repeated at the top, as `[Table columns: June 30, 2024
+  2023]`. A PDF chunk that starts mid-balance-sheet can't say which column is 2024; this
+  one can.
+
+Ingest any `.htm`/`.html` filing as you would a PDF: drop it in `data/`, and `python -m
+financial_rag.ingest` picks it up. Fetching by ticker comes next.
+
+**Results.** With the HTML 10-Ks as the samples instead of the PDFs, from the same
+filings:
+- **Microsoft:** 59 statement figures, all 59 confirmed by XBRL; the PDF gave 56.
+- **Apple:** 59 of 59 confirmed. Its country breakdown, which the PDF run sometimes missed,
+  extracts.
+- **Benchmark:** 46/47 correct and 47/47 routed, verified and cited. The one miss was
+  correct: "dividends declared" was answered from Note 16's table total ($22,296 million),
+  which the benchmark now accepts alongside the MD&A's $22.3 billion and the equity
+  statement's 22,293. "Short-term unearned revenue", the question the PDF version missed
+  for want of its column headings, is answered.
+
+**A skipped part is completed, not guessed.** The model sometimes leaves out a small row
+when mapping a breakdown: Microsoft's "Other" product line, $45 million of $245 billion.
+The add-up check then rejects the whole breakdown. Now, when the parts fall short, the one
+row on the same page that reports the shortfall in every year is added. A gap that no
+single row fills, or that two rows could fill, is never filled. An overshoot (a wrong row
+mapped) leaves a negative gap, so a wrong mapping is still rejected.
 
 ## Hybrid retrieval
 
@@ -842,6 +878,9 @@ pytest
 
 Tests cover:
 - the chunking logic and prompt formatting;
+- EDGAR HTML filings: page breaks, hidden XBRL headers, inline tags inside sentences, rows
+  read as statement rows, column headings repeated in chunks that lost them, and HTML
+  files found and ingested next to PDFs;
 - the upload path: validation, staging, replace-on-reupload;
 - the XBRL check: matching by tag, unit, fiscal year and full-year period (a quarter
   ending the same day never matches); contradicted figures dropped; no network, no
