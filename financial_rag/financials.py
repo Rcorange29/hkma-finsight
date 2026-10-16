@@ -399,6 +399,9 @@ _HEADINGS = {
         r"cash\s+flows?\s+statements?|statements?\s+of\s+(?:consolidated\s+)?cash\s+flows?",
         re.IGNORECASE),
 }
+# "Comprehensive income", "comprehensive (loss) income", "comprehensive loss"
+_COMPREHENSIVE = re.compile(r"comprehensive(?:\s+\(?(?:income|loss|earnings)\)?)+",
+                            re.IGNORECASE)
 _HEADING_LINES = 8          # the heading must sit near the top of the page
 _MIN_FIGURES = 12           # comma-grouped numbers; a TOC page has almost none
 
@@ -424,9 +427,10 @@ def statement_pages(pages: dict[int, str]) -> dict[int, str]:
         top = [ln for ln in text.splitlines() if ln.strip()][:_HEADING_LINES]
         # A row with figures isn't a heading, even one that names a statement:
         # Travelers' comprehensive income lists gains "recognized in the
-        # consolidated statement of income 2,744 (644) 2,249"
-        heading = "\n".join(ln for ln in top
-                            if "comprehensive" not in ln.lower() and not _GROUPED.search(ln))
+        # consolidated statement of income 2,744 (644) 2,249". A statement of
+        # comprehensive income alone isn't the income statement, but Realty
+        # Income's "Statements of Income and Comprehensive Income" is.
+        heading = "\n".join(_COMPREHENSIVE.sub("", ln) for ln in top if not _GROUPED.search(ln))
         if len(_GROUPED.findall(text)) < _MIN_FIGURES:
             continue
         found = {kind for kind, rx in _HEADINGS.items() if rx.search(heading)}
