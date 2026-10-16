@@ -199,3 +199,61 @@ def test_jobs_left_running_by_a_restart_are_failed():
     old = jobs.get("old")
     assert old.state == jobs.FAILED
     assert "restart" in old.error
+
+
+# Target's 10-Ks: the year to February 1, 2025 is the one Target calls fiscal 2024
+TGT_REPORTS = [
+    edgar.FilingRef(cik=27419, company="TARGET CORP", form="10-K", accession=f"a{n}",
+                    report_date=end, filing_date="", document=f"tgt-{end}.htm")
+    for n, end in enumerate(["2026-01-31", "2025-02-01", "2024-02-03"])
+]
+TGT_FACTS = {"facts": {"us-gaap": {"Revenues": {"units": {"USD": [
+    {"start": s, "end": e, "form": "10-K", "fy": fy, "fp": "FY", "accn": a, "val": 1}
+    for s, e, fy, a in [("2025-02-02", "2026-01-31", 2025, "a0"),
+                        ("2024-02-04", "2025-02-01", 2024, "a1"),
+                        ("2023-01-29", "2024-02-03", 2023, "a2")]
+]}}}}}
+
+
+@pytest.fixture
+def target(sec, monkeypatch):
+    monkeypatch.setattr(edgar, "cik_for_ticker", lambda t: {"TGT": 27419}.get(t))
+    monkeypatch.setattr(edgar, "annual_reports", lambda cik, count=None: TGT_REPORTS)
+    monkeypatch.setattr(edgar, "companyfacts", lambda cik: TGT_FACTS)
+    return sec
+
+
+def test_a_fiscal_year_fetches_that_years_10k_as_the_company_names_it(client, target):
+    response = client.post("/filings", json={"ticker": "TGT", "fiscal_year": 2024},
+                           headers={"X-User-Id": ALICE})
+    assert response.json()["subject"] == "TGT FY2024"
+    done = wait(response.json()["job_id"], client=client)
+    assert done["state"] == jobs.DONE
+    assert target[0][0] == "tgt-10k-2025-02-01.htm"
+
+
+def test_without_xbrl_the_report_dates_year_is_used(client, target, monkeypatch):
+    def unavailable(cik):
+        raise edgar.EdgarUnavailable("down")
+
+    monkeypatch.setattr(edgar, "companyfacts", unavailable)
+    response = client.post("/filings", json={"ticker": "TGT", "fiscal_year": 2024},
+                           headers={"X-User-Id": ALICE})
+    assert wait(response.json()["job_id"], client=client)["state"] == jobs.DONE
+    assert target[0][0] == "tgt-10k-2024-02-03.htm"
+
+
+def test_a_year_edgar_does_not_list_fails_and_is_refunded(client, target):
+    response = client.post("/filings", json={"ticker": "TGT", "fiscal_year": 2010},
+                           headers={"X-User-Id": ALICE})
+    done = wait(response.json()["job_id"], client=client)
+    assert done["state"] == jobs.FAILED
+    assert done["error"].startswith("TGT has no 10-K for fiscal 2010 on SEC EDGAR")
+    assert usage.usage(ALICE).uploads == 0
+
+
+@pytest.mark.parametrize("year", [1900, 3000, "soon"])
+def test_implausible_fiscal_years_are_refused(client, sec, year):
+    response = client.post("/filings", json={"ticker": "AAPL", "fiscal_year": year},
+                           headers={"X-User-Id": ALICE})
+    assert response.status_code == 422
