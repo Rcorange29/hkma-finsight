@@ -12,9 +12,15 @@ numbers, so a figure read from the filing's text can be checked against them:
             filing too new or too old): the figure stands on the page check alone
 
 Each line item maps to the us-gaap tags companies use for it; a figure matches if
-any of them reports its value. A fiscal year is the year of the period's end
-date, which is how the statements' own column headers read. Annual flows
-(income, cash) must cover about a year; balances are as of the year end.
+any of them reports its value. Annual flows (income, cash) must cover about a
+year; balances are as of the year end.
+
+A fiscal year is named as the company names it, which is how its income
+statement's column headers read. Usually that's the year the period ends in, but
+not always: Target's year to January 31, 2026 is its "2025", and Johnson &
+Johnson's year to January 1, 2023 was its "2022". Each 10-K's XBRL says which
+fiscal year it reports (its `fy`), so a period end date takes the name of the
+year whose 10-K it closes (fiscal_year_labels).
 """
 
 from __future__ import annotations
@@ -66,12 +72,53 @@ _ANNUAL_DAYS = range(350, 380)      # 52/53-week years included
 MATCH, MISMATCH, ABSENT = "match", "mismatch", "absent"
 
 
+def fiscal_year_labels(facts_json: dict) -> dict[date, int]:
+    """Each fiscal year end a 10-K reports, mapped to the year the company names it.
+
+    A 10-K's latest period end is the year end it reports, and its `fy` is that
+    year's name.
+    """
+    latest: dict[str | None, tuple[date, int]] = {}
+    for tag in facts_json.get("facts", {}).get("us-gaap", {}).values():
+        for rows in tag.get("units", {}).values():
+            for row in rows:
+                if not str(row.get("form", "")).startswith("10-K") or row.get("fp") != "FY":
+                    continue
+                if not isinstance(row.get("fy"), int):
+                    continue
+                end = date.fromisoformat(row["end"])
+                accession = row.get("accn")
+                if accession not in latest or end > latest[accession][0]:
+                    latest[accession] = (end, row["fy"])
+    return dict(latest.values())
+
+
+def year_name(end: date, labels: dict[date, int]) -> int:
+    """The fiscal year a period ending on `end` belongs to, as the company names it.
+
+    A year end no 10-K reports as its own (one only shown as a comparative) is
+    named the way the nearest reported year end is.
+    """
+    if end in labels:
+        return labels[end]
+    if not labels:
+        return end.year
+    nearest = min(labels, key=lambda known: abs((known - end).days))
+    return end.year + labels[nearest] - nearest.year
+
+
 def annual_values(facts_json: dict, metric: str, fiscal_year: int,
-                  accession: str | None = None) -> set[Decimal]:
+                  accession: str | None = None,
+                  labels: dict[date, int] | None = None) -> set[Decimal]:
     """Every value 10-K XBRL reports for a line item's fiscal year (restatements too),
-    or only those one filing reported, given its accession number."""
+    or only those one filing reported, given its accession number.
+
+    `labels` is fiscal_year_labels(facts_json), for callers asking many times.
+    """
     item = LINE_ITEMS[metric]
     gaap = facts_json.get("facts", {}).get("us-gaap", {})
+    if labels is None:
+        labels = fiscal_year_labels(facts_json)
     flow = item.statement in ("income", "cash")
     values = set()
     for tag in TAGS.get(metric, ()):
@@ -81,7 +128,7 @@ def annual_values(facts_json: dict, metric: str, fiscal_year: int,
             if accession is not None and row.get("accn") != accession:
                 continue
             end = date.fromisoformat(row["end"])
-            if end.year != fiscal_year:
+            if year_name(end, labels) != fiscal_year:
                 continue
             if flow:
                 if "start" not in row:
@@ -94,11 +141,11 @@ def annual_values(facts_json: dict, metric: str, fiscal_year: int,
     return values
 
 
-def check(fact: Fact, facts_json: dict) -> str:
+def check(fact: Fact, facts_json: dict, labels: dict[date, int] | None = None) -> str:
     """match, mismatch or absent: how XBRL compares with one extracted figure."""
     if fact.segment or fact.metric not in TAGS:
         return ABSENT       # breakdowns are dimensional XBRL, not in companyfacts
-    reported = annual_values(facts_json, fact.metric, fact.fiscal_year)
+    reported = annual_values(facts_json, fact.metric, fact.fiscal_year, labels=labels)
     if not reported:
         return ABSENT
     magnitude = LINE_ITEMS[fact.metric].magnitude
@@ -129,14 +176,16 @@ def crosscheck(facts: list[Fact], company: str | None, cik: int | None = None) -
     except edgar.EdgarUnavailable as exc:
         return Report(facts, Counter(), [], skipped=str(exc))
 
+    labels = fiscal_year_labels(facts_json)
     kept: list[Fact] = []
     counts: Counter = Counter()
     mismatches = []
     for fact in facts:
-        result = check(fact, facts_json)
+        result = check(fact, facts_json, labels)
         counts[result] += 1
         if result == MISMATCH:
-            mismatches.append((fact, annual_values(facts_json, fact.metric, fact.fiscal_year)))
+            mismatches.append((fact, annual_values(facts_json, fact.metric, fact.fiscal_year,
+                                                   labels=labels)))
             continue
         kept.append(replace(fact, xbrl=result) if result == MATCH else fact)
     return Report(kept, counts, mismatches, cik)

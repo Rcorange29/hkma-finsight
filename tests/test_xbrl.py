@@ -6,6 +6,7 @@ FY2025 values, so no network is needed.
 
 import json
 import time
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -94,6 +95,55 @@ def sec(monkeypatch):
 )
 def test_check(f, expected):
     assert xbrl.check(f, COMPANYFACTS) == expected
+
+
+# Target names the year to January 31, 2026 "fiscal 2025" (its 10-K's fy), and the
+# prior year to February 1, 2025 "2024"; its revenue in each filing, in EDGAR's shape
+def _target(accn, fy, start, end, val):
+    return {"start": start, "end": end, "form": "10-K", "fy": fy, "fp": "FY",
+            "accn": accn, "val": val}
+
+
+TARGET = {"facts": {"us-gaap": {
+    "Revenues": {"units": {"USD": [
+        _target("tgt-2026", 2025, "2025-02-02", "2026-01-31", 104780000000),
+        _target("tgt-2026", 2025, "2024-02-04", "2025-02-01", 106566000000),
+        _target("tgt-2025", 2024, "2024-02-04", "2025-02-01", 106566000000),
+        _target("tgt-2025", 2024, "2023-01-29", "2024-02-03", 107412000000),
+    ]}},
+    "Assets": {"units": {"USD": [
+        {"end": "2026-01-31", "form": "10-K", "fy": 2025, "fp": "FY", "accn": "tgt-2026",
+         "val": 59490000000},
+    ]}},
+}}}
+
+
+def test_fiscal_years_are_named_as_the_company_names_them():
+    labels = xbrl.fiscal_year_labels(TARGET)
+    assert labels == {date(2026, 1, 31): 2025, date(2025, 2, 1): 2024}
+    assert xbrl.year_name(date(2026, 1, 31), labels) == 2025
+    # A year end shown only as a comparative takes its neighbour's naming
+    assert xbrl.year_name(date(2024, 2, 3), labels) == 2023
+    # Apple's years are named after the year they end in
+    assert xbrl.year_name(date(2025, 9, 27), xbrl.fiscal_year_labels(COMPANYFACTS)) == 2025
+    assert xbrl.year_name(date(2024, 9, 28), xbrl.fiscal_year_labels(COMPANYFACTS)) == 2024
+    assert xbrl.year_name(date(2025, 9, 27), {}) == 2025
+
+
+def test_a_53_week_year_ending_in_january_keeps_its_name():
+    # Johnson & Johnson's fiscal 2022 ended on January 1, 2023
+    jnj = {"facts": {"us-gaap": {"NetIncomeLoss": {"units": {"USD": [
+        _target("jnj-2023", 2022, "2022-01-03", "2023-01-01", 17941000000)]}}}}}
+    assert xbrl.annual_values(jnj, "net_income", 2022) == {Decimal(17941000000)}
+    assert xbrl.annual_values(jnj, "net_income", 2023) == set()
+
+
+def test_target_figures_match_under_targets_own_year_names():
+    facts = [fact("revenue", 2025, 104780000000), fact("revenue", 2023, 107412000000),
+             fact("total_assets", 2025, 59490000000)]
+    labels = xbrl.fiscal_year_labels(TARGET)
+    assert [xbrl.check(f, TARGET, labels) for f in facts] == [xbrl.MATCH] * 3
+    assert xbrl.check(fact("revenue", 2026, 104780000000), TARGET) == xbrl.ABSENT
 
 
 def test_every_line_item_has_tags():

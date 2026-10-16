@@ -36,6 +36,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -131,9 +132,11 @@ def prepare(ticker: str, refresh: bool = False) -> tuple[str, list[Case]]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(edgar.fetch_document(filing.url), encoding="utf-8")
         ingest.ingest_file(path, OWNER, cik=cik)
-    fiscal_year = int(filing.report_date[:4])
-    cases = make_cases(ticker, filing.company, fiscal_year, edgar.companyfacts(cik),
-                       filing.accession)
+    facts_json = edgar.companyfacts(cik)
+    # As the company names it: Target's year to 2026-01-31 is "fiscal 2025"
+    fiscal_year = xbrl.year_name(date.fromisoformat(filing.report_date),
+                                 xbrl.fiscal_year_labels(facts_json))
+    cases = make_cases(ticker, filing.company, fiscal_year, facts_json, filing.accession)
     return name, cases
 
 

@@ -39,7 +39,7 @@ import inspect
 import re
 import sqlite3
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
@@ -563,7 +563,8 @@ def extract_facts(
                 conflicted.add(item.key)
             found.setdefault((item.key, year), fact)
 
-    facts = [f for (metric, _), f in sorted(found.items()) if metric not in conflicted]
+    facts = align_balance_years(
+        [f for (metric, _), f in sorted(found.items()) if metric not in conflicted])
     print(
         f"Extracted {len(facts)} figures from {source_file} "
         f"({rejected} unverified mappings dropped"
@@ -571,6 +572,26 @@ def extract_facts(
         + ")."
     )
     return facts
+
+
+def align_balance_years(facts: list[Fact]) -> list[Fact]:
+    """
+    Name balance sheet columns by the fiscal year they close, as the income statement does.
+
+    Most companies name a fiscal year after the calendar year it ends in, so the
+    statements' headers agree. Some name it after the year it mostly falls in:
+    Target heads its income statement for the year to January 31, 2026 "2025",
+    while its balance sheet is dated "January 31, 2026". A balance sheet is never
+    dated after the latest period its own income statement covers, so when its
+    latest year is one more, each of its columns closes the year named one less.
+    """
+    flows = [f.fiscal_year for f in facts if LINE_ITEMS[f.metric].statement != "balance"]
+    balances = [f.fiscal_year for f in facts if LINE_ITEMS[f.metric].statement == "balance"]
+    if not flows or not balances or max(balances) != max(flows) + 1:
+        return facts
+    return [replace(f, fiscal_year=f.fiscal_year - 1)
+            if LINE_ITEMS[f.metric].statement == "balance" else f
+            for f in facts]
 
 
 # ---------------------------------------------------------------------------
