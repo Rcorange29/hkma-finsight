@@ -7,6 +7,7 @@ nothing here touches the vector store or the model.
 
 from langchain_core.documents import Document
 
+import rag
 from rag import _format_docs, doc_to_context
 
 
@@ -48,3 +49,71 @@ def test_context_names_the_company_when_known():
     doc = Document(page_content="body", metadata={
         "source_file": "acme.pdf", "page": 2, "company": "Acme Holdings, Inc."})
     assert doc_to_context(doc) == "Source: acme.pdf (Acme Holdings, Inc.), Page: 2\nbody"
+
+
+# ---------------------------------------------------------------------------
+# Checking answers against their excerpts
+# ---------------------------------------------------------------------------
+
+DOCS = [
+    Document(page_content="Goodwill   50,969", metadata={
+        "source_file": "msft.pdf", "page": 89, "page_label": "90"}),
+    Document(page_content="Includes goodwill of $51.0 billion related to Activision.", metadata={
+        "source_file": "msft.pdf", "page": 93, "page_label": "94"}),
+    Document(page_content="Goodwill   $ 16,326 (Nuance)", metadata={
+        "source_file": "msft.pdf", "page": 91, "page_label": "92"}),
+]
+
+
+def test_a_correct_answer_passes():
+    assert rag.check_answer("Goodwill was $50,969 million (msft.pdf, p.89).", "q", DOCS) == []
+    # Cited by the page's 1-based label works too
+    assert rag.check_answer("It was $51.0 billion (msft.pdf, p.94).", "q", DOCS) == []
+
+
+def test_a_blended_figure_is_caught():
+    problems = rag.check_answer("Goodwill was $51,969 million (msft.pdf, p.89).", "q", DOCS)
+    assert problems == ["51,969 isn't printed on msft.pdf p.89"]
+
+
+def test_a_real_figure_cited_to_the_wrong_page_is_caught():
+    # p.92 is a retrieved page (the Nuance note), but $51.0 billion isn't on it
+    problems = rag.check_answer("It was $51.0 billion (msft.pdf, p.92).", "q", DOCS)
+    assert problems == ["51.0 isn't printed on msft.pdf p.92"]
+
+
+def test_a_citation_of_a_page_that_wasnt_retrieved_is_caught():
+    problems = rag.check_answer("Goodwill was $50,969 million (msft.pdf, p.12).", "q", DOCS)
+    assert problems == ["(msft.pdf, p.12) isn't the source of any excerpt"]
+
+
+def test_figures_from_the_question_and_uncited_figures_in_excerpts_pass():
+    assert rag.check_answer("Yes, 57,582 is not in these pages.", "Where is 57,582?", DOCS) == []
+    assert rag.check_answer("Goodwill was 50,969.", "q", DOCS) == []
+    assert rag.check_answer("Goodwill was 12,345.", "q", DOCS) == [
+        "12,345 isn't printed in any excerpt"]
+
+
+def test_years_and_whole_percentages_are_not_checked():
+    assert rag.check_answer("In fiscal 2024 the rate was 18%.", "q", DOCS) == []
+
+
+def test_a_failed_check_is_retried_with_the_problems(monkeypatch):
+    calls = []
+
+    def fake_answer(question, docs, problems=None):
+        calls.append(problems)
+        return ("Goodwill was $51,969 million (msft.pdf, p.89)." if problems is None
+                else "Goodwill was $50,969 million (msft.pdf, p.89).")
+
+    monkeypatch.setattr(rag, "_answer_with_docs", fake_answer)
+    assert rag.answer_checked("q", DOCS) == "Goodwill was $50,969 million (msft.pdf, p.89)."
+    assert calls == [None, ["51,969 isn't printed on msft.pdf p.89"]]
+
+
+def test_an_answer_that_fails_twice_carries_a_warning(monkeypatch):
+    monkeypatch.setattr(rag, "_answer_with_docs",
+                        lambda q, docs, problems=None: "It was $1,234 million (msft.pdf, p.89).")
+    answer = rag.answer_checked("q", DOCS)
+    assert answer.startswith("It was $1,234 million (msft.pdf, p.89).")
+    assert "Not verified against the excerpts: 1,234 isn't printed on msft.pdf p.89" in answer

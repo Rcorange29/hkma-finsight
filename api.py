@@ -67,7 +67,9 @@ class RetrievalTrace(BaseModel):
     keyword_rank: int | None = None
     keyword_score: float | None = None
     matched_terms: list[str] = []         # query terms the chunk contains
-    rerank_score: float | None = None
+    rerank_score: float | None = None    # cross-encoder score
+    reranker: str | None = None          # "llm" or "cross-encoder": which set the order
+    llm_rank: int | None = None          # the LLM reranker's position for this chunk
     exact_value_match: bool = False       # contains every value the question quotes
 
 

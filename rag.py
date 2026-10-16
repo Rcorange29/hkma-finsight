@@ -9,17 +9,23 @@ Pipeline:
      labels and values that embeddings blur together.
   3. Fuse the two rankings (weighted reciprocal rank fusion; the keyword weight
      depends on the question, see hybrid.profile_query) and keep RERANK_CANDIDATES.
-  4. Rerank those with cross-encoder/ms-marco-MiniLM-L-6-v2. When the question
-     quotes exact values ("57,582"), chunks containing all of them go first.
+  4. Rerank those with cross-encoder/ms-marco-MiniLM-L-6-v2, then have
+     gpt-4o-mini order the cross-encoder's top LLM_RERANK_CANDIDATES (15): it reads
+     statements, line items and fiscal years far better than the small
+     cross-encoder (see eval_retrieval.py). If that call fails, the cross-encoder
+     order stands. When the question quotes exact values ("57,582"), chunks
+     containing all of them go first either way.
   5. Send the top TOP_K (5) to GPT-4o-mini. Every returned chunk records how it
      was found under metadata["retrieval"], and the API passes that on.
 
 HYBRID_SEARCH=0 turns step 2 off, leaving the semantic-only pipeline.
+RERANKER=cross-encoder skips the LLM step in 4 (no extra model call per question).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +37,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from pydantic import BaseModel, Field
 
 import hybrid
 from ingest import PUBLIC_OWNER
@@ -43,6 +50,10 @@ RETRIEVE_K = 20           # semantic candidates pulled from ChromaDB before filt
 SCORE_THRESHOLD = 0.10    # minimum relevance score (Chroma L2-normalised scores top ~0.16)
 KEYWORD_K = 20            # BM25 candidates
 RERANK_CANDIDATES = 30    # fused candidates the cross-encoder scores
+LLM_RERANK_CANDIDATES = 15  # of those, how many the LLM reranker orders
+RERANKER = os.getenv("RERANKER", "llm")   # "llm" or "cross-encoder"
+LLM_RERANK_MODEL = "gpt-4o-mini"
+LLM_RERANK_TIMEOUT = 30   # seconds; on timeout the cross-encoder order is used
 TOP_K = 5                 # final chunks sent to the LLM after reranking
 HYBRID_SEARCH = os.getenv("HYBRID_SEARCH", "1") != "0"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -84,6 +95,49 @@ def _get_reranker():
 
 
 # ---------------------------------------------------------------------------
+# LLM reranker
+# ---------------------------------------------------------------------------
+
+LLM_RERANK_PROMPT = """You are ranking excerpts from SEC 10-K filings by how well they \
+answer a question.
+
+Question: {question}
+
+Rank the passages so the one that most directly answers the question comes first:
+- Best: the passage states the exact figure or fact asked for: the right line item, the \
+right fiscal year or date, and the right company if one is named.
+- Next: passages with closely related figures, or the explanation behind them.
+- When several passages contain the figure, prefer the primary financial statement or \
+the note that reports it.
+List every passage number that could help, best first. Leave out irrelevant passages.
+
+Passages:
+
+{passages}"""
+
+
+class _PassageRanking(BaseModel):
+    ranking: list[int] = Field(description="Passage numbers, most useful first")
+
+
+def llm_rank(question: str, docs: list) -> list[int]:
+    """
+    Positions in `docs`, most useful first, as gpt-4o-mini orders them. Passages
+    it leaves out are missing; numbers out of range or repeated are dropped.
+    """
+    passages = "\n\n".join(f"[{n}] {doc_to_context(doc)}" for n, doc in enumerate(docs, 1))
+    llm = ChatOpenAI(
+        model=LLM_RERANK_MODEL, temperature=0, timeout=LLM_RERANK_TIMEOUT, max_retries=1
+    ).with_structured_output(_PassageRanking)
+    result = llm.invoke(LLM_RERANK_PROMPT.format(question=question, passages=passages))
+    order: list[int] = []
+    for n in result.ranking:
+        if 1 <= n <= len(docs) and n - 1 not in order:
+            order.append(n - 1)
+    return order
+
+
+# ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
@@ -119,23 +173,118 @@ def _format_docs(docs) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def _answer_with_docs(question: str, docs: list) -> str:
-    """Format context from pre-fetched docs and call GPT-4o-mini."""
+RETRY_PROMPT = """Your answer to that question failed a check against the excerpts:
+{problems}
+Answer the question again. Use only figures exactly as they are printed in the \
+excerpts, and cite only a file and page shown on an excerpt's Source line."""
+
+
+def _answer_with_docs(question: str, docs: list, problems: list[str] | None = None) -> str:
+    """Format context from pre-fetched docs and call GPT-4o-mini.
+
+    `problems` (from check_answer) asks for a corrected answer instead.
+    """
     context = _format_docs(docs)
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", SYSTEM_PROMPT),
-            ("human", "{question}"),
-        ]
-    )
+    messages = [("system", SYSTEM_PROMPT), ("human", "{question}")]
+    if problems:
+        messages.append(("human", RETRY_PROMPT))
+    prompt = ChatPromptTemplate.from_messages(messages)
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     chain = (
-        {"context": RunnableLambda(lambda _: context), "question": RunnablePassthrough()}
+        {
+            "context": RunnableLambda(lambda _: context),
+            "question": RunnablePassthrough(),
+            "problems": RunnableLambda(lambda _: "\n".join(f"- {p}" for p in problems or [])),
+        }
         | prompt
         | llm
         | StrOutputParser()
     )
     return chain.invoke(question)
+
+
+# Figures an answer must have taken from an excerpt: comma-grouped numbers and
+# decimals ("50,969", "11.80", "$10.3 billion"). Bare integers (years, "16%")
+# aren't checked.
+_ANSWER_FIGURE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+")
+_CITATION = re.compile(r"\(([^()]+?\.pdf),\s*p\.?\s*(\d+)\)", re.IGNORECASE)
+
+
+def _numbers(text: str) -> set[str]:
+    """Number tokens as hybrid.tokenize writes them: "$ 50,969" -> "50969"."""
+    return {t for t in hybrid.tokenize(text) if t[0].isdigit()}
+
+
+def check_answer(answer: str, question: str, docs: list) -> list[str]:
+    """
+    What in a text answer isn't backed by the excerpts it was written from.
+    Empty when everything checks out.
+
+    - Each "(file.pdf, p.N)" must name a retrieved excerpt, and every figure in
+      the text before it (back to the previous citation) must be printed on that
+      page or in the question.
+    - Figures with no citation after them must be printed in some excerpt.
+
+    The prompt already forbids invented figures and citations; this catches the
+    model doing it anyway, e.g. blending "Goodwill 50,969" and "$51.0 billion"
+    into "$51,969 million", or citing the wrong page for a real figure.
+    """
+    asked = _numbers(question)
+
+    # A page can be cited by its index (what the Source line shows) or by its
+    # label, the 1-based number PDF viewers and the printed page footers use
+    on_page: dict[tuple[str, str], set[str]] = {}
+    for doc in docs:
+        source = doc.metadata.get("source_file", doc.metadata.get("source"))
+        for number in {doc.metadata.get("page"), doc.metadata.get("page_label")} - {None}:
+            on_page.setdefault((source, str(number)), set()).update(_numbers(doc.page_content))
+    anywhere = set().union(*on_page.values()) if on_page else set()
+
+    problems: list[str] = []
+
+    def check(text: str, printed: set[str], where: str) -> None:
+        for figure in dict.fromkeys(_ANSWER_FIGURE.findall(text)):
+            number = figure.replace(",", "")
+            if number not in printed and number not in asked:
+                problem = f"{figure} isn't printed {where}"
+                if problem not in problems:
+                    problems.append(problem)
+
+    start = 0
+    for match in _CITATION.finditer(answer):
+        source, page = match.group(1).strip(), match.group(2)
+        cited = on_page.get((source, page))
+        if cited is None:
+            problem = f"({source}, p.{page}) isn't the source of any excerpt"
+            if problem not in problems:
+                problems.append(problem)
+            check(answer[start:match.start()], anywhere, "in any excerpt")
+        else:
+            check(answer[start:match.start()], cited, f"on {source} p.{page}")
+        start = match.end()
+    check(answer[start:], anywhere, "in any excerpt")
+    return problems
+
+
+def answer_checked(question: str, docs: list) -> str:
+    """
+    Answer, check the answer against the excerpts, and retry once with the
+    problems spelled out. If the retry fails the check too, the answer goes out
+    with a warning naming what couldn't be verified, rather than as if it were.
+    """
+    answer = _answer_with_docs(question, docs)
+    problems = check_answer(answer, question, docs)
+    if not problems:
+        return answer
+    print(f"Answer failed the excerpt check, retrying: {problems}")
+    answer = _answer_with_docs(question, docs, problems)
+    problems = check_answer(answer, question, docs)
+    if problems:
+        answer += (
+            "\n\n⚠️ Not verified against the excerpts: " + "; ".join(problems)
+            + ". Check the cited pages before relying on these figures."
+        )
+    return answer
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +417,7 @@ def retrieve_and_rerank(
     owner: str | None = None,
     keyword: bool | None = None,
     filing: tuple[str, str] | None = None,
+    reranker: str | None = None,
 ) -> list:
     """
     Hybrid retrieval for the chunks the owner may see; see the module docstring.
@@ -275,9 +425,12 @@ def retrieve_and_rerank(
     Returns up to TOP_K chunks, best first. Each is a copy of the stored chunk
     whose metadata["retrieval"] records how it was found: chunk_id, matched_by
     ("semantic" and/or "keyword"), each search's rank and score, the query terms
-    it matched, and the cross-encoder score. `keyword` overrides HYBRID_SEARCH.
-    `filing` = (owner, source_file) searches that one filing only.
+    it matched, the cross-encoder score, and which reranker set the final order
+    (with the LLM's rank when it did). `keyword` overrides HYBRID_SEARCH and
+    `reranker` overrides RERANKER. `filing` = (owner, source_file) searches that
+    one filing only.
     """
+    reranker = RERANKER if reranker is None else reranker
     keyword = HYBRID_SEARCH if keyword is None else keyword
     profile = hybrid.profile_query(question)
     scope = Scope(owner, filing)
@@ -318,23 +471,37 @@ def retrieve_and_rerank(
 
     # Cross-encoder reranking of the fused candidates; a chunk containing every
     # value the question quotes outranks one that doesn't, whatever the model says
-    reranker = _get_reranker()
+    cross_encoder = _get_reranker()
     candidates = [cid for cid, _ in fused]
-    ce_scores = reranker.predict([(question, docs[cid].page_content) for cid in candidates])
+    ce_scores = cross_encoder.predict([(question, docs[cid].page_content) for cid in candidates])
     exact = {
         cid: keyword and hybrid.has_amounts(profile, hybrid.index_text(docs[cid].page_content))
         for cid in candidates
     }
-    ranked = sorted(
-        zip(ce_scores, candidates, strict=True),
-        key=lambda x: (exact[x[1]], x[0]),
-        reverse=True,
-    )
+    ce = {cid: float(score) for cid, score in zip(candidates, ce_scores, strict=True)}
+    ranked = sorted(candidates, key=lambda cid: (exact[cid], ce[cid]), reverse=True)
+
+    # The LLM orders the cross-encoder's best few; the rest keep their order after
+    # them. Exact-value matches still go first.
+    used, llm_ranks = "cross-encoder", {}
+    if reranker == "llm" and len(ranked) > 1:
+        head = ranked[:LLM_RERANK_CANDIDATES]
+        try:
+            order = [head[i] for i in llm_rank(question, [docs[cid] for cid in head])]
+        except Exception as exc:
+            print(f"LLM reranking failed, using the cross-encoder order: {exc}")
+        else:
+            llm_ranks = {cid: n for n, cid in enumerate(order, 1)}
+            ranked = order + [cid for cid in ranked if cid not in llm_ranks]
+            ranked = sorted(ranked, key=lambda cid: not exact[cid])   # stable
+            used = "llm"
 
     out = []
-    for score, cid in ranked[:TOP_K]:
+    for cid in ranked[:TOP_K]:
         doc = docs[cid]
-        info = {**trace[cid], "rerank_score": round(float(score), 4)}
+        info = {**trace[cid], "rerank_score": round(ce[cid], 4), "reranker": used}
+        if cid in llm_ranks:
+            info["llm_rank"] = llm_ranks[cid]
         if exact[cid]:
             info["exact_value_match"] = True
         out.append(Document(id=doc.id, page_content=doc.page_content,
@@ -363,7 +530,7 @@ def query(
             retrieved_docs=[],
         )
 
-    answer = _answer_with_docs(question, top_docs)
+    answer = answer_checked(question, top_docs)
     return RAGResponse(
         answer=answer, sources=build_sources(question, top_docs), retrieved_docs=top_docs
     )
