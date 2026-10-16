@@ -160,17 +160,27 @@ class FilingRef:
                                   document=self.document)
 
 
-def latest_annual_report(cik: int) -> FilingRef | None:
-    """The company's most recent 10-K (amendments aside), or None if it has none."""
+def annual_reports(cik: int, count: int | None = None) -> list[FilingRef]:
+    """The company's 10-Ks (amendments aside) filed as HTML, newest first; at most
+    `count`. EDGAR's recent list covers about the last ten years of filings."""
     data = submissions(cik)
     recent = data.get("filings", {}).get("recent", {})
+    reports = []
     for i, form in enumerate(recent.get("form", [])):
         if form == "10-K" and recent["primaryDocument"][i].lower().endswith((".htm", ".html")):
-            return FilingRef(
+            reports.append(FilingRef(
                 cik=cik, company=data.get("name", ""), form=form,
                 accession=recent["accessionNumber"][i], report_date=recent["reportDate"][i],
-                filing_date=recent["filingDate"][i], document=recent["primaryDocument"][i])
-    return None
+                filing_date=recent["filingDate"][i], document=recent["primaryDocument"][i]))
+            if count is not None and len(reports) == count:
+                break
+    return reports
+
+
+def latest_annual_report(cik: int) -> FilingRef | None:
+    """The company's most recent 10-K (amendments aside), or None if it has none."""
+    reports = annual_reports(cik, 1)
+    return reports[0] if reports else None
 
 
 def fetch_document(url: str) -> str:

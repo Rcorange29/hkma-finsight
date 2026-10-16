@@ -178,6 +178,20 @@ def filings_named(company: str | None, filings: dict[str, ingest.Filing]) -> lis
     ]
 
 
+def company_of(filings: dict[str, ingest.Filing]) -> dict[str, str]:
+    """
+    Each filing's company, by its distinctive name words, so two 10-Ks of one
+    company ("Microsoft Corporation", "MICROSOFT CORP") merge into one history.
+    A filing whose company is unknown stands alone.
+    """
+    out = {}
+    for name, filing in filings.items():
+        words = _name_words(filing.company or "")
+        if words:
+            out[name] = " ".join(sorted(words))
+    return out
+
+
 def match_filing(company: str | None, filings: dict[str, ingest.Filing]) -> str | None:
     """The one filing the named company matches; None for no match or several."""
     hits = filings_named(company, filings)
@@ -406,7 +420,8 @@ def _answer(question: str, owner: str, source_file: str | None, planner) -> Answ
         if breakdown is None:
             return _text_answer(question, owner, narrowed, note)
         metrics, parts = breakdown
-    series = analysis.analyze(facts, metrics, plan.fiscal_years, plan.year_over_year, parts)
+    series = analysis.analyze(facts, metrics, plan.fiscal_years, plan.year_over_year, parts,
+                              company_of(filings))
 
     if not any(r.value is not None for s in series for r in s.results):
         # Nothing computable: say why, then answer from the text without arithmetic.

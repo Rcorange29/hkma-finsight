@@ -159,6 +159,11 @@ class Series:
     changes: list[Change]
     cagr: tuple[int, int, Decimal] | None = None     # (from year, to year, rate)
     part: str = ""                                   # for breakdowns: the segment etc.
+    # One company's filings merged into this series, newest first (just
+    # source_file, the newest, when there is only one)
+    filings: list[str] = field(default_factory=list)
+    # Inputs a newer filing reported differently: (newer, older), newer used
+    restated: list[tuple[Fact, Fact]] = field(default_factory=list)
 
 
 FactIndex = dict[tuple[str, str, int], Fact]
@@ -171,6 +176,46 @@ def index_facts(facts: list[Fact]) -> dict[str, FactIndex]:
         key = (fact.metric, fact.segment, fact.fiscal_year)
         by_file.setdefault(fact.source_file, {})[key] = fact
     return by_file
+
+
+@dataclass
+class History:
+    """One company's figures across its filings, a newer filing winning each year."""
+    filings: list[str]                      # newest first
+    index: FactIndex
+    restated: dict[tuple[str, str, int], Fact]   # key -> the older figure replaced
+
+
+def merge_filings(facts: list[Fact], company_of: dict[str, str] | None = None) -> list[History]:
+    """
+    Group filings by company (`company_of` maps a file to its company; a file not
+    in it stands alone) and merge each company's figures.
+
+    A 10-K reports three years of flows and two of balances, so two filings of
+    one company overlap. The newer filing, the one whose latest fiscal year is
+    later, wins every year both report: a restatement replaces what was first
+    reported. The figure it replaced is kept in `restated`, so the answer can
+    say so.
+    """
+    company_of = company_of or {}
+    by_file = index_facts(facts)
+    groups: dict[str, list[str]] = {}
+    for source in by_file:
+        groups.setdefault(company_of.get(source) or f"file:{source}", []).append(source)
+    histories = []
+    for sources in groups.values():
+        newest_first = sorted(
+            sources, key=lambda s: (max(y for _, _, y in by_file[s]), s), reverse=True)
+        merged: FactIndex = {}
+        restated: dict[tuple[str, str, int], Fact] = {}
+        for source in newest_first:
+            for key, fact in by_file[source].items():
+                if key not in merged:
+                    merged[key] = fact
+                elif merged[key].value != fact.value and key not in restated:
+                    restated[key] = fact
+        histories.append(History(newest_first, merged, restated))
+    return histories
 
 
 def parts_of(metric: Metric, index: FactIndex) -> list[str]:
@@ -230,12 +275,15 @@ def analyze(
     fiscal_years: list[int],
     year_over_year: bool,
     parts: list[str] | None = None,
+    company_of: dict[str, str] | None = None,
 ) -> list[Series]:
     """
-    Compute each metric for each filing that has figures.
+    Compute each metric for each company that has figures: one filing, or
+    several of one company merged into a longer history (see merge_filings;
+    `company_of` maps a file to its company).
 
     Breakdown metrics get one series per part: the `parts` asked for that the
-    filing has, or every part it has when none are asked for.
+    company has, or every part it has when none are asked for.
 
     Years: the requested ones, or else the latest year the metric can be
     computed for. With year_over_year and a single year, the year before is
@@ -244,7 +292,8 @@ def analyze(
     shown, plus a compound annual growth rate when the span is over a year.
     """
     series: list[Series] = []
-    for source_file, index in index_facts(facts).items():
+    for history in merge_filings(facts, company_of):
+        index, source_file = history.index, history.filings[0]
         available = sorted({year for _, _, year in index}, reverse=True)
         for key in metric_keys:
             metric = METRICS[key]
@@ -256,9 +305,24 @@ def analyze(
                 present = parts_of(metric, index)
                 targets = (list(parts) if present else []) if parts else present
             for part in targets:
-                series.extend(_series(metric, index, source_file, available, part,
-                                      fiscal_years, year_over_year))
+                for s in _series(metric, index, source_file, available, part,
+                                 fiscal_years, year_over_year):
+                    _attribute(s, history)
+                    series.append(s)
     return series
+
+
+def _attribute(s: Series, history: History) -> None:
+    """Name the filings behind a series, and each result's own filing."""
+    s.filings = history.filings
+    for r in s.results:
+        files = {f.source_file for f in r.inputs}
+        if len(files) == 1:
+            r.source_file = files.pop()
+        for f in r.inputs:
+            key = (f.metric, f.segment, f.fiscal_year)
+            if key in history.restated and all(f is not new for new, _ in s.restated):
+                s.restated.append((f, history.restated[key]))
 
 
 def _series(
@@ -401,7 +465,12 @@ def render(series: list[Series], names: dict[str, str] | None = None) -> tuple[s
     sources: dict[tuple[str, int, str], dict] = {}
     for s in series:
         title = f"{s.metric.name}: {s.part}" if s.part else s.metric.name
-        lines = [f"**{title}** · {s.source_file}"]
+        if len(s.filings) > 1:
+            # One company's history across filings, newest first
+            who = (names or {}).get(s.source_file)
+            lines = [f"**{title}** · {who + ': ' if who else ''}{', '.join(s.filings)}"]
+        else:
+            lines = [f"**{title}** · {s.source_file}"]
         for r in s.results:
             if r.value is None:
                 lines.append(f"- FY{r.fiscal_year}: not calculated: {r.problem}")
@@ -428,6 +497,12 @@ def render(series: list[Series], names: dict[str, str] | None = None) -> tuple[s
             first, last, rate = s.cagr
             lines.append(
                 f"- Compound annual growth FY{first} → FY{last}: {_round(rate * 100, 1)}% a year"
+            )
+        for new, old in s.restated:
+            lines.append(
+                f"- Restated: {ITEM_NAMES[new.metric]} FY{new.fiscal_year} is "
+                f"{format_value(new.value, new.unit)} in {new.source_file}, the newer filing; "
+                f"{old.source_file} reported {format_value(old.value, old.unit)}."
             )
         blocks.append("\n".join(lines))
     blocks.append(FOOTER)

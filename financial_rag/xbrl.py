@@ -121,12 +121,34 @@ def annual_values(facts_json: dict, metric: str, fiscal_year: int,
 
     `labels` is fiscal_year_labels(facts_json), for callers asking many times.
     """
+    return {Decimal(str(row["val"]))
+            for row in _annual_rows(facts_json, metric, fiscal_year, accession, labels)}
+
+
+def latest_value(facts_json: dict, metric: str, fiscal_year: int,
+                 accessions: set[str], labels: dict[date, int] | None = None) -> Decimal | None:
+    """
+    The value the most recently filed of the given 10-Ks reports for a fiscal year:
+    what a history merged from those filings should show, a restatement replacing
+    what was first reported. None if none of them reports it, or that filing
+    reports two values.
+    """
+    rows = [row for row in _annual_rows(facts_json, metric, fiscal_year, None, labels)
+            if row.get("accn") in accessions]
+    if not rows:
+        return None
+    filed = max(row.get("filed", "") for row in rows)
+    values = {Decimal(str(row["val"])) for row in rows if row.get("filed", "") == filed}
+    return values.pop() if len(values) == 1 else None
+
+
+def _annual_rows(facts_json: dict, metric: str, fiscal_year: int, accession: str | None,
+                 labels: dict[date, int] | None):
     item = LINE_ITEMS[metric]
     gaap = facts_json.get("facts", {}).get("us-gaap", {})
     if labels is None:
         labels = fiscal_year_labels(facts_json)
     flow = item.statement in ("income", "cash")
-    values = set()
     for tag in TAGS.get(metric, ()):
         for row in gaap.get(tag, {}).get("units", {}).get(_UNITS[item.unit], []):
             if not str(row.get("form", "")).startswith("10-K"):
@@ -143,8 +165,7 @@ def annual_values(facts_json: dict, metric: str, fiscal_year: int,
                     continue    # a quarter or a stub period
             elif "start" in row:
                 continue
-            values.add(Decimal(str(row["val"])))
-    return values
+            yield row
 
 
 def check(fact: Fact, facts_json: dict, labels: dict[date, int] | None = None) -> str:

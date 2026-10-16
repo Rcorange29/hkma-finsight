@@ -20,6 +20,13 @@ All companies share the store, so naming the company in the question also
 tests choosing the right filing. A question is only generated when XBRL has
 every value it needs.
 
+With --history N, each ticker's latest N 10-Ks are indexed instead, and the
+questions cover every year they report between them: revenue, cost of revenue
+and net income year by year, then revenue growth across the whole span. Filings overlap, so
+the expected value for a year is what the most recently filed of them reports
+(a restatement replacing the first figure), which is how the engine merges a
+company's filings.
+
 Cost: indexing a 10-K is about $0.01-0.03 (embeddings and figure extraction),
 a question about $0.001. Needs SEC_USER_AGENT and OPENAI_API_KEY in .env.
 
@@ -27,6 +34,7 @@ Usage:
     python -m financial_rag.eval_xbrl                    # the default tickers
     python -m financial_rag.eval_xbrl NVDA KO WMT        # any others
     python -m financial_rag.eval_xbrl --refresh AAPL     # re-index first
+    python -m financial_rag.eval_xbrl --history 3 MSFT   # five years from three 10-Ks
 """
 
 from __future__ import annotations
@@ -124,26 +132,69 @@ def make_cases(ticker: str, company: str, fiscal_year: int, facts_json: dict,
     return cases
 
 
-def prepare(ticker: str, refresh: bool = False) -> tuple[str, list[Case]]:
-    """Index the ticker's latest 10-K into the store (once) and generate its cases."""
+HISTORY_METRICS = ["revenue", "cost_of_revenue", "net_income"]
+
+
+def make_history_cases(ticker: str, company: str, years: list[int], facts_json: dict,
+                       accessions: set[str]) -> list[Case]:
+    """Each year's revenue, cost of revenue and net income, as the latest of the filings
+    reports it (Target restated its FY2022-23 cost of sales), then revenue's compound
+    growth from the first year to the last."""
+    who = company_name(company)
+    labels = xbrl.fiscal_year_labels(facts_json)
+    cases = []
+    expected: dict[tuple[str, int], Decimal] = {}
+    for key in HISTORY_METRICS:
+        metric = analysis.METRICS[key]
+        for year in years:
+            value = xbrl.latest_value(facts_json, key, year, accessions, labels)
+            if value is None:
+                continue
+            expected[(key, year)] = value
+            cases.append(Case(ticker, key, year,
+                              f"What was {who}'s {metric.name.lower()} in fiscal {year}?",
+                              analysis.format_value(value, metric.unit)))
+    first, last = expected.get(("revenue", years[0])), expected.get(("revenue", years[-1]))
+    if first and last and first > 0 and last > 0:
+        rate = (last / first) ** (Decimal(1) / (years[-1] - years[0])) - 1
+        cases.append(Case(ticker, "revenue_growth", years[-1],
+                          f"What was {who}'s compound annual revenue growth from fiscal "
+                          f"{years[0]} to fiscal {years[-1]}?",
+                          f"{analysis.format_value(rate, 'percent')} a year"))
+    return cases
+
+
+def prepare(ticker: str, refresh: bool = False, history: int = 1) -> tuple[str, list[Case]]:
+    """Index the ticker's latest 10-K (or latest `history` 10-Ks) into the store, once,
+    and generate its cases."""
     cik = edgar.cik_for_ticker(ticker)
     if cik is None:
         raise SystemExit(f"No SEC filer has the ticker {ticker}.")
-    filing = edgar.latest_annual_report(cik)
-    if filing is None:
+    reports = edgar.annual_reports(cik, history)
+    if not reports:
         raise SystemExit(f"{ticker} has no 10-K on EDGAR.")
-    name = f"{ticker.lower()}-10k-{filing.report_date}.htm"
-    path = STORE / "filings" / name
-    if refresh or not path.exists() or not financials.count_facts(OWNER).get(name):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(edgar.fetch_document(filing.url), encoding="utf-8")
-        ingest.ingest_file(path, OWNER, cik=cik)
+    names = []
+    for filing in reports:
+        name = f"{ticker.lower()}-10k-{filing.report_date}.htm"
+        path = STORE / "filings" / name
+        if refresh or not path.exists() or not financials.count_facts(OWNER).get(name):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(edgar.fetch_document(filing.url), encoding="utf-8")
+            ingest.ingest_file(path, OWNER, cik=cik)
+        names.append(name)
     facts_json = edgar.companyfacts(cik)
     # As the company names it: Target's year to 2026-01-31 is "fiscal 2025"
-    fiscal_year = xbrl.year_name(date.fromisoformat(filing.report_date),
-                                 xbrl.fiscal_year_labels(facts_json))
-    cases = make_cases(ticker, filing.company, fiscal_year, facts_json, filing.accession)
-    return name, cases
+    labels = xbrl.fiscal_year_labels(facts_json)
+    latest = reports[0]
+    fiscal_year = xbrl.year_name(date.fromisoformat(latest.report_date), labels)
+    if history == 1:
+        cases = make_cases(ticker, latest.company, fiscal_year, facts_json, latest.accession)
+    else:
+        # Each 10-K reports three years of income: n filings cover n + 2 years
+        oldest = xbrl.year_name(date.fromisoformat(reports[-1].report_date), labels) - 2
+        cases = make_history_cases(ticker, latest.company, list(range(oldest, fiscal_year + 1)),
+                                   facts_json, {r.accession for r in reports})
+    return ", ".join(names), cases
 
 
 def run(case: Case) -> dict:
@@ -165,12 +216,14 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("tickers", nargs="*", default=DEFAULT_TICKERS)
     parser.add_argument("--refresh", action="store_true", help="re-fetch and re-index")
+    parser.add_argument("--history", type=int, default=1, metavar="N",
+                        help="index each ticker's latest N 10-Ks and ask about every year")
     args = parser.parse_args(argv)
     use_store(STORE)
 
     rows = []
     for ticker in (t.upper() for t in args.tickers):
-        name, cases = prepare(ticker, args.refresh)
+        name, cases = prepare(ticker, args.refresh, args.history)
         print(f"{ticker}: {name}, {len(cases)} questions", flush=True)
         for case in cases:
             row = run(case)

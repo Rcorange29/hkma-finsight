@@ -607,3 +607,74 @@ def test_part_words_read_country_abbreviations(printed):
 
 def test_part_words_leave_the_word_us_alone():
     assert "united" not in router._part_words("revenue from us")
+
+
+# ---------------------------------------------------------------------------
+# History: one company's filings merged
+# ---------------------------------------------------------------------------
+
+# Microsoft's FY2024 10-K, and a later one that restates FY2023 revenue
+MSFT_2024 = {("revenue", 2024): 245122, ("revenue", 2023): 211915, ("revenue", 2022): 198270,
+             ("operating_income", 2024): 109433, ("operating_income", 2023): 88523}
+MSFT_2025 = {("revenue", 2025): 281724, ("revenue", 2024): 245122, ("revenue", 2023): 212000,
+             ("operating_income", 2025): 128528, ("operating_income", 2024): 109433}
+
+
+@pytest.fixture
+def two_microsoft_filings(monkeypatch):
+    _store(PUBLIC_OWNER, "msft-2024.htm", MSFT_2024)
+    _store(PUBLIC_OWNER, "msft-2025.htm", MSFT_2025)
+    _store("alice", "acme.pdf", {("revenue", 2024): 10})
+    names = {"msft-2024.htm": "Microsoft Corporation", "msft-2025.htm": "MICROSOFT CORP",
+             "acme.pdf": "Acme Inc."}
+    monkeypatch.setattr(ingest, "filings", lambda owners: [
+        Filing(name, owner, 10, names[name])
+        for owner, name in sorted({(f.owner, f.source_file)
+                                   for f in financials.load_facts(owners)})])
+
+
+def test_one_companys_filings_merge_into_one_history(text_calls, two_microsoft_filings):
+    result = router.answer("Microsoft revenue from 2022 to 2025", "alice",
+                           planner=_plan(metrics=["revenue"], years=[2022, 2023, 2024, 2025],
+                                         company="Microsoft"))
+    [s] = result.series
+    assert s.filings == ["msft-2025.htm", "msft-2024.htm"]
+    assert [(r.fiscal_year, r.value / M, r.source_file) for r in s.results] == [
+        (2022, 198270, "msft-2024.htm"),     # only the older filing has it
+        (2023, 212000, "msft-2025.htm"),     # both do: the newer one's restated figure
+        (2024, 245122, "msft-2025.htm"),
+        (2025, 281724, "msft-2025.htm")]
+    # Named as the newest filing names the company
+    assert result.answer.startswith(
+        "**Total revenue** · MICROSOFT CORP: msft-2025.htm, msft-2024.htm")
+    assert ("- Restated: Total revenue FY2023 is $212,000 million in msft-2025.htm, the newer "
+            "filing; msft-2024.htm reported $211,915 million.") in result.answer
+    # The same value in both isn't a restatement
+    assert "FY2024 is" not in result.answer
+    assert "(msft-2024.htm, p.67)" in result.answer      # FY2022's own citation
+    assert "Compound annual growth FY2022 → FY2025" in result.answer
+    assert result.filings == ["msft-2024.htm", "msft-2025.htm"]
+
+
+def test_a_ratio_across_the_history_uses_each_years_figures(text_calls, two_microsoft_filings):
+    result = router.answer("Microsoft operating margin in 2023 and 2025", "alice",
+                           planner=_plan(years=[2023, 2025], company="Microsoft"))
+    [s] = result.series
+    fy23, fy25 = s.results
+    assert fy23.value == Decimal(88523) / Decimal(212000)    # restated revenue
+    # Its inputs come from two filings, each cited as its own
+    assert [f.source_file for f in fy23.inputs] == ["msft-2024.htm", "msft-2025.htm"]
+    assert fy25.value == Decimal(128528) / Decimal(281724)
+
+
+def test_the_latest_year_comes_from_the_newest_filing(text_calls, two_microsoft_filings):
+    result = router.answer("Microsoft's revenue?", "alice",
+                           planner=_plan(metrics=["revenue"], company="Microsoft"))
+    assert "**FY2025: $281,724 million**" in result.answer
+
+
+def test_different_companies_are_never_merged(text_calls, two_microsoft_filings):
+    result = router.answer("Revenue in 2024?", "alice",
+                           planner=_plan(metrics=["revenue"], years=[2024]))
+    assert sorted(tuple(s.filings) for s in result.series) == [
+        ("acme.pdf",), ("msft-2025.htm", "msft-2024.htm")]
