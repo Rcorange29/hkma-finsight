@@ -1,11 +1,12 @@
 """
-ingest.py — Load 10-K PDFs from ./data, chunk them, embed with OpenAI,
+ingest.py — Load 10-K filings from ./data, chunk them, embed with OpenAI,
 and persist to ChromaDB. Re-running is idempotent: each file's chunks
 replace any previously ingested from a file of the same name and owner.
 
-Every chunk carries an `owner`:
-  - data/*.pdf               owner "public": sample filings every user can query
-  - data/users/<id>/*.pdf    owner <id>: one user's private uploads
+A filing is a PDF or the HTML 10-K EDGAR serves (.htm/.html; see
+html_filing.py). Every chunk carries an `owner`:
+  - data/*.pdf, *.htm        owner "public": sample filings every user can query
+  - data/users/<id>/...      owner <id>: one user's private uploads and fetches
 
 api.py reuses ingest_file() to add user-uploaded PDFs one at a time.
 
@@ -16,6 +17,8 @@ Chunking strategy:
   - Token-aware splitting via tiktoken (cl100k_base), 1024 tokens / 128 overlap.
   - Table boundary protection: consecutive lines that look like financial table
     rows are temporarily joined so the splitter never cuts across them.
+  - HTML filings: a chunk holding a table's rows but not its column headings
+    gets the headings repeated at its top, so "57,582 50,901" says which year.
 
 Usage:
     python -m financial_rag.ingest
@@ -28,10 +31,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from financial_rag import config, financials
+from financial_rag import config, financials, html_filing
 
 load_dotenv()
 
@@ -40,6 +44,8 @@ USERS_DIR = DATA_DIR / "users"
 PUBLIC_OWNER = "public"
 CHROMA_DIR = Path("chroma_db")
 COLLECTION_NAME = "financial_reports"
+
+FILING_SUFFIXES = (".pdf", ".htm", ".html")
 
 CHUNK_SIZE = 1024    # tokens
 CHUNK_OVERLAP = 128  # tokens
@@ -118,6 +124,25 @@ def _restore_table_blocks(chunks: list) -> list:
 # Core pipeline
 # ---------------------------------------------------------------------------
 
+def load_html(path: Path, owner: str) -> tuple[list, dict[int, list[html_filing.Table]]]:
+    """An EDGAR HTML filing as one Document per page, plus each page's tables."""
+    print(f"Loading {path.name} ...")
+    pages = html_filing.load_pages(path.read_text(encoding="utf-8", errors="replace"))
+    docs = [
+        Document(page_content=page.text,
+                 metadata={"page": page.number, "source_file": path.name, "owner": owner})
+        for page in pages
+    ]
+    return docs, {page.number: page.tables for page in pages}
+
+
+def load_filing(path: Path, owner: str) -> tuple[list, dict[int, list[html_filing.Table]]]:
+    """One Document per page, plus the tables on each page (HTML only)."""
+    if path.suffix.lower() in (".htm", ".html"):
+        return load_html(path, owner)
+    return load_pdf(path, owner), {}
+
+
 def load_pdf(pdf_path: Path, owner: str) -> list:
     print(f"Loading {pdf_path.name} ...")
     pages = PyPDFLoader(str(pdf_path)).load()
@@ -154,20 +179,24 @@ def open_vectorstore() -> Chroma:
     )
 
 
-def ingest_file(pdf_path: Path, owner: str = PUBLIC_OWNER, max_pages: int | None = None) -> int:
+def ingest_file(
+    pdf_path: Path, owner: str = PUBLIC_OWNER, max_pages: int | None = None,
+    cik: int | None = None,
+) -> int:
     """
     Chunk and embed one PDF into the store, returning the number of chunks added,
     then extract its financial statements into structured figures.
 
     A file longer than max_pages is rejected before anything is embedded: the
-    cost of ingesting grows with its length.
+    cost of ingesting grows with its length. `cik`, when known (a filing fetched
+    by ticker), names the SEC filer whose XBRL data checks the figures.
 
     Chunks and figures previously ingested from a file with the same name and
     owner are replaced, so re-ingesting (or re-uploading) a filing never
     duplicates passages or keeps stale numbers. Other owners' files of the same
     name are untouched.
     """
-    docs = load_pdf(pdf_path, owner)
+    docs, tables = load_filing(pdf_path, owner)
     if max_pages is not None and len(docs) > max_pages:
         raise ValueError(
             f"{pdf_path.name} has {len(docs)} pages; the limit is {max_pages}."
@@ -179,6 +208,10 @@ def ingest_file(pdf_path: Path, owner: str = PUBLIC_OWNER, max_pages: int | None
     # Copy the page text first: split_documents rewrites table newlines in place.
     pages = {doc.metadata["page"]: doc.page_content for doc in docs}
     chunks = split_documents(docs)
+    for chunk in chunks:
+        on_page = tables.get(chunk.metadata["page"])
+        if on_page:
+            chunk.page_content = html_filing.with_table_headings(chunk.page_content, on_page)
     company = registrant_name(pages.get(0, ""))
     if company:
         for chunk in chunks:
@@ -197,7 +230,7 @@ def ingest_file(pdf_path: Path, owner: str = PUBLIC_OWNER, max_pages: int | None
     # Figures are an extra: if extraction fails, text Q&A still works, and the
     # analysis engine reports the figures as missing rather than guessing.
     try:
-        financials.extract_and_store(pages, pdf_path.name, owner, company)
+        financials.extract_and_store(pages, pdf_path.name, owner, company, cik)
     except Exception as exc:
         print(f"Warning: financial figure extraction failed for {pdf_path.name}: {exc}")
     return len(chunks)
@@ -296,12 +329,17 @@ def list_documents(owner: str) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def pdf_jobs() -> list[tuple[Path, str]]:
-    """Every PDF under data/ with its owner: public samples, then each user's uploads."""
-    jobs = [(p, PUBLIC_OWNER) for p in sorted(DATA_DIR.glob("*.pdf"))]
+def _filings_in(folder: Path) -> list[Path]:
+    return sorted(p for p in folder.iterdir()
+                  if p.is_file() and p.suffix.lower() in FILING_SUFFIXES)
+
+
+def filing_jobs() -> list[tuple[Path, str]]:
+    """Every filing under data/ with its owner: public samples, then each user's."""
+    jobs = [(p, PUBLIC_OWNER) for p in _filings_in(DATA_DIR)] if DATA_DIR.exists() else []
     if USERS_DIR.exists():
         for user_dir in sorted(p for p in USERS_DIR.iterdir() if p.is_dir()):
-            jobs += [(p, user_dir.name) for p in sorted(user_dir.glob("*.pdf"))]
+            jobs += [(p, user_dir.name) for p in _filings_in(user_dir)]
     return jobs
 
 
@@ -312,9 +350,9 @@ def main():
         return
 
     # Rebuilding the store from scratch restores everything with its access.
-    jobs = pdf_jobs()
+    jobs = filing_jobs()
     if not jobs:
-        raise FileNotFoundError(f"No PDF files found in {DATA_DIR.resolve()}")
+        raise FileNotFoundError(f"No filings found in {DATA_DIR.resolve()}")
     for pdf_path, owner in jobs:
         ingest_file(pdf_path, owner)
     print(f"Vectorstore persisted to {CHROMA_DIR.resolve()}")

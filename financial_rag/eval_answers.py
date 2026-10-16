@@ -30,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import statistics
 import time
 from dataclasses import dataclass, field
@@ -38,6 +39,9 @@ from pathlib import Path
 from langchain_core.callbacks import get_usage_metadata_callback
 
 from financial_rag import config, router
+
+# A page citation from a PDF or an EDGAR HTML filing: (apple-sec-10k.pdf, p.32)
+_CITATION = re.compile(r"\.(?:pdf|html?), p\.")
 
 OWNER = "answer-eval"       # sees the public samples only
 RESULTS_PATH = Path("answer_eval_results.json")
@@ -139,9 +143,11 @@ CASES = [
     Case("text", "How fast did Azure and other cloud services revenue grow in fiscal 2024?",
          ["30%"], "text"),
     Case("text", "What are the main risks the company describes related to AI?", [], "text"),
-    # Declared, not paid: the engine only has dividends paid ($21,771 million)
+    # Declared, not paid: the engine only has dividends paid ($21,771 million). The
+    # filing prints declared three ways: $22.3 billion (MD&A), 22,293 (equity
+    # statement) and 22,296 (Note 16's table of the four quarterly declarations).
     Case("text", "What were total dividends declared in fiscal 2024?",
-         [("$22.3 billion", "22,293")], absent=["21,771"]),
+         [("$22.3 billion", "22,293", "22,296")], absent=["21,771"]),
     # Follow-ups, read in the context of the conversation
     Case("follow-up", "And in 2023?", ["$72,361 million"], "calculation", NET_INCOME_2024),
     Case("follow-up", "What about the operating margin?", ["44.6%"], "calculation", REVENUE_2024),
@@ -224,7 +230,7 @@ def run(case: Case) -> dict:
         "correct": correct,
         "route_ok": case.route is None or result.route == case.route,
         "verified": "Not verified" not in text,
-        "cited": case.refusal or ".pdf, p." in text,
+        "cited": case.refusal or bool(_CITATION.search(text)),
         "seconds": round(seconds, 2),
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,

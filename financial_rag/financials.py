@@ -612,6 +612,60 @@ def _map_parts(pages: dict[int, str]) -> list[PartMapping]:
     ).rows
 
 
+_Parts = dict[str, tuple["VerifiedRow", int, Decimal]]
+_TOTAL_LABEL = re.compile(r"^\s*total\b", re.IGNORECASE)
+
+
+def _part_sum(members: _Parts, year: int) -> Decimal:
+    return sum((row.values[row.years.index(year)] * scale
+                for row, _, scale in members.values()), Decimal(0))
+
+
+def _adds_up(members: _Parts, years: set[int], metric: str,
+             total: dict[tuple[str, int], Decimal]) -> bool:
+    return bool(years) and len(members) >= 2 and all(
+        (metric, year) in total and _part_sum(members, year) == total[(metric, year)]
+        for year in years
+    )
+
+
+def _missing_part(
+    members: _Parts, years: set[int], metric: str,
+    total: dict[tuple[str, int], Decimal], pages: dict[int, str],
+) -> tuple[str, tuple[VerifiedRow, int, Decimal]] | None:
+    """The one unmapped row on the parts' pages that fills the gap to the total.
+
+    The model sometimes skips a small row (Microsoft's "Other", $45 million of
+    $245 billion). If exactly one row reports the shortfall in every year, it is
+    the missing part; if none or several do, nothing is added. An overshoot
+    (a wrong row mapped) leaves a negative gap and is never filled.
+    """
+    if not years or any((metric, y) not in total for y in years):
+        return None
+    gap = {y: total[(metric, y)] - _part_sum(members, y) for y in years}
+    if any(g <= 0 for g in gap.values()):
+        return None
+    taken = {row.excerpt for row, _, _ in members.values()}
+    found = []
+    for page in sorted({page for _, page, _ in members.values()}):
+        text = pages.get(page, "")
+        scale = page_scale(text)
+        lines = [ln.rstrip() for ln in text.splitlines()]
+        for i, line in enumerate(lines):
+            label, values = split_row(line)
+            if not label or _TOTAL_LABEL.match(label) or line.strip() in taken or not scale:
+                continue
+            header = header_years(lines, i)
+            if not header or len(values) < len(header) or not years <= set(header):
+                continue
+            columns = values[-len(header):]
+            if all(columns[header.index(y)] * scale == gap[y] for y in years):
+                name = _FOOTNOTE.sub("", label).strip()
+                found.append((name, (VerifiedRow(label, line.strip(), header, columns),
+                                     page, scale)))
+    return found[0] if len(found) == 1 else None
+
+
 def extract_breakdowns(
     pages: dict[int, str], source_file: str, owner: str, totals: list[Fact], mapper=_map_parts
 ) -> list[Fact]:
@@ -645,13 +699,13 @@ def extract_breakdowns(
     for key, members in parts.items():
         breakdown = BREAKDOWNS[key]
         years = set.intersection(*(set(row.years) for row, _, _ in members.values()))
-        sums_match = bool(years) and len(members) >= 2 and all(
-            (breakdown.total, year) in total
-            and sum(row.values[row.years.index(year)] * scale
-                    for row, _, scale in members.values()) == total[(breakdown.total, year)]
-            for year in years
-        )
-        if not sums_match:
+        if not _adds_up(members, years, breakdown.total, total):
+            missing = _missing_part(members, years, breakdown.total, total, candidates)
+            if missing is not None:
+                members[missing[0]] = missing[1]
+                print(f"Completed {key} from {source_file} with {missing[0]!r}, the one row "
+                      "on the page that makes its parts add up.")
+        if not _adds_up(members, years, breakdown.total, total):
             print(f"Dropped {key} from {source_file}: its parts don't add up to the total.")
             continue
         for name, (row, page, scale) in members.items():
@@ -763,7 +817,8 @@ def count_facts(owner: str) -> dict[str, int]:
 
 
 def extract_and_store(
-    pages: dict[int, str], source_file: str, owner: str, company: str | None = None
+    pages: dict[int, str], source_file: str, owner: str, company: str | None = None,
+    cik: int | None = None,
 ) -> int:
     """Re-extract one file's figures, replacing any stored before. Returns the count.
 
@@ -783,19 +838,23 @@ def extract_and_store(
     if facts:
         from financial_rag import xbrl  # local import: xbrl imports this module
 
-        report = xbrl.crosscheck(facts, company)
+        report = xbrl.crosscheck(facts, company, cik)
         print(xbrl.summary(report, source_file))
         facts = report.facts
     replace_facts(owner, source_file, facts)
     return len(facts)
 
 
-def load_pages(pdf_path: Path) -> dict[int, str]:
+def load_pages(path: Path) -> dict[int, str]:
+    """A filing's page text by page number: a PDF, or an EDGAR HTML 10-K."""
+    if path.suffix.lower() in (".htm", ".html"):
+        from financial_rag import html_filing
+
+        html = path.read_text(encoding="utf-8", errors="replace")
+        return {page.number: page.text for page in html_filing.load_pages(html)}
     from langchain_community.document_loaders import PyPDFLoader
 
-    return {
-        doc.metadata["page"]: doc.page_content for doc in PyPDFLoader(str(pdf_path)).load()
-    }
+    return {doc.metadata["page"]: doc.page_content for doc in PyPDFLoader(str(path)).load()}
 
 
 def main(argv: list[str]) -> None:
@@ -811,7 +870,7 @@ def main(argv: list[str]) -> None:
 
     from financial_rag import ingest  # local import: ingest imports this module
 
-    for pdf_path, owner in ingest.pdf_jobs():
+    for pdf_path, owner in ingest.filing_jobs():
         pages = load_pages(pdf_path)
         extract_and_store(pages, pdf_path.name, owner, ingest.registrant_name(pages.get(0, "")))
 
