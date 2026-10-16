@@ -128,7 +128,11 @@ def test_header_years_finds_the_nearest_header_above():
         ("(In millions, except per share amounts)", Decimal(1_000_000)),
         ("(in thousands)", Decimal(1_000)),
         ("(Dollars in billions)", Decimal(1_000_000_000)),
+        # Target: the scale word alone in the note
+        ("(millions, except per share data) 2025 2024 2023", Decimal(1_000_000)),
+        ("(millions) 2025 2024 2023", Decimal(1_000_000)),
         ("Total revenue 245,122", None),
+        ("Revenue grew as (millions of) new customers joined", None),
     ],
 )
 def test_page_scale(text, expected):
@@ -189,6 +193,7 @@ def test_verify_row_with_stacked_year_header():
         ("(in thousands, except shares)", Decimal(1_000), Decimal(1)),
         ("(In millions, except per share amounts; shares in thousands)",
          Decimal(1_000_000), Decimal(1_000)),
+        ("(millions, except per share data)", Decimal(1_000_000), Decimal(1_000_000)),
     ],
 )
 def test_page_scale_for_share_counts(note, dollars, shares):

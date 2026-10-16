@@ -191,7 +191,10 @@ class Fact:
 _DASHES = {"—", "–", "-"}   # some filings print zero as a dash
 _YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
 _GROUPED = re.compile(r"\b\d{1,3}(?:,\d{3})+\b")
-_SCALE = re.compile(r"\bin\s+(thousands|millions|billions)\b", re.IGNORECASE)
+# "(In millions, except ...)", or the bare "(millions, except per share data)" Target prints
+_SCALE = re.compile(
+    r"\bin\s+(thousands|millions|billions)\b|\(\s*(thousands|millions|billions)\s*[,)]",
+    re.IGNORECASE)
 # Within a scale note: shares with their own scale ("shares ... in thousands"), or
 # shares excepted from it ("except share data"). "per share" amounts are neither.
 _SHARE_SCALE = re.compile(
@@ -294,7 +297,7 @@ def page_scale(text: str, unit: str = "USD") -> Decimal | None:
             return _SCALES[own.group(1).lower()]
         if _SHARES_UNSCALED.search(note):
             return Decimal(1)
-    return _SCALES[match.group(1).lower()]
+    return _SCALES[(match.group(1) or match.group(2)).lower()]
 
 
 def _words(text: str) -> set[str]:
