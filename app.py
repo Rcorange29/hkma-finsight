@@ -46,6 +46,9 @@ def _error_detail(exc: Exception) -> str:
             detail = exc.response.json().get("detail", str(exc))
         except ValueError:
             detail = exc.response.text
+        if exc.response.status_code == 429:
+            # A usage limit: the detail is written for the user
+            return detail
         return f"API error ({exc.response.status_code}): {detail}"
     if isinstance(exc, httpx.ConnectError):
         return "Could not connect to the API server."
@@ -88,6 +91,15 @@ def _found_by(retrieval: dict | None) -> str:
     if retrieval.get("llm_rank"):
         line += f" · reranked #{retrieval['llm_rank']} by LLM"
     return line
+
+
+def _usage_line(counts: dict) -> str:
+    """'Questions: 12 of 50 · Uploads: 1 of 3 this month'"""
+    def part(label: str, used: int, limit: int) -> str:
+        return f"{label}: {used} of {limit}" if limit else f"{label}: {used}"
+
+    return (part("Questions", counts["questions"], counts["question_limit"]) + " · "
+            + part("Uploads", counts["uploads"], counts["upload_limit"]) + " this month")
 
 
 def _render_sources(sources: list[dict], expanded: bool) -> None:
@@ -254,8 +266,7 @@ if question := st.chat_input("Ask a question about the financial reports …"):
                 filing = None
                 interpreted = question
             except httpx.HTTPStatusError as exc:
-                detail = exc.response.json().get("detail", str(exc))
-                answer = f"API error ({exc.response.status_code}): {detail}"
+                answer = _error_detail(exc)
                 sources = []
                 filing = None
                 interpreted = question
@@ -279,3 +290,12 @@ if question := st.chat_input("Ask a question about the financial reports …"):
         {"role": "assistant", "content": answer, "sources": sources, "filing": filing,
          "interpreted": interpreted if interpreted != question else None}
     )
+
+# Last, so the counts include the question just asked
+with st.sidebar:
+    try:
+        response = httpx.get(f"{API_BASE_URL}/usage", headers=HEADERS, timeout=10.0)
+        response.raise_for_status()
+        st.caption(_usage_line(response.json()))
+    except Exception:
+        pass   # the counts are informational; the API still enforces the limits

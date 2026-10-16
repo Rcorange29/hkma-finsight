@@ -101,7 +101,7 @@ def test_upload_ingests_under_the_original_name_into_the_users_dir(
 ):
     seen = {}
 
-    def fake_ingest(path, owner):
+    def fake_ingest(path, owner, max_pages=None):
         seen.update(name=path.name, owner=owner, bytes=path.read_bytes())
         return 42
 
@@ -121,7 +121,7 @@ def test_upload_ingests_under_the_original_name_into_the_users_dir(
 
 
 def test_two_users_can_upload_the_same_filename(client, data_dir, monkeypatch):
-    monkeypatch.setattr(ingest, "ingest_file", lambda path, owner: 1)
+    monkeypatch.setattr(ingest, "ingest_file", lambda path, owner, max_pages=None: 1)
     _upload(client, body=PDF_BYTES + b" alice", owner=ALICE)
     _upload(client, body=PDF_BYTES + b" bob", owner=BOB)
     users = data_dir / "users"
@@ -130,7 +130,7 @@ def test_two_users_can_upload_the_same_filename(client, data_dir, monkeypatch):
 
 
 def test_reupload_replaces_the_saved_file(client, data_dir, monkeypatch):
-    monkeypatch.setattr(ingest, "ingest_file", lambda path, owner: 1)
+    monkeypatch.setattr(ingest, "ingest_file", lambda path, owner, max_pages=None: 1)
     _upload(client, body=PDF_BYTES + b" v1")
     assert _upload(client, body=PDF_BYTES + b" v2").status_code == 201
     assert (data_dir / "users" / ALICE / "acme-10k.pdf").read_bytes() == PDF_BYTES + b" v2"
@@ -153,7 +153,7 @@ def test_upload_rejects_oversized_files(client, data_dir, monkeypatch):
 
 
 def test_failed_ingestion_leaves_nothing_behind(client, data_dir, monkeypatch):
-    def no_text(path, owner):
+    def no_text(path, owner, max_pages=None):
         raise ValueError(f"{path.name} has no extractable text")
 
     monkeypatch.setattr(ingest, "ingest_file", no_text)

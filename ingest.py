@@ -154,10 +154,13 @@ def open_vectorstore() -> Chroma:
     )
 
 
-def ingest_file(pdf_path: Path, owner: str = PUBLIC_OWNER) -> int:
+def ingest_file(pdf_path: Path, owner: str = PUBLIC_OWNER, max_pages: int | None = None) -> int:
     """
     Chunk and embed one PDF into the store, returning the number of chunks added,
     then extract its financial statements into structured figures.
+
+    A file longer than max_pages is rejected before anything is embedded: the
+    cost of ingesting grows with its length.
 
     Chunks and figures previously ingested from a file with the same name and
     owner are replaced, so re-ingesting (or re-uploading) a filing never
@@ -165,6 +168,10 @@ def ingest_file(pdf_path: Path, owner: str = PUBLIC_OWNER) -> int:
     name are untouched.
     """
     docs = load_pdf(pdf_path, owner)
+    if max_pages is not None and len(docs) > max_pages:
+        raise ValueError(
+            f"{pdf_path.name} has {len(docs)} pages; the limit is {max_pages}."
+        )
     if not any(doc.page_content.strip() for doc in docs):
         raise ValueError(
             f"{pdf_path.name} has no extractable text (scanned PDFs need OCR first)."

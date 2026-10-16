@@ -89,7 +89,8 @@ carries a visible "Not verified against the excerpts" warning naming each proble
 | `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
 | `eval_retrieval.py` | Retrieval benchmark: three pipeline configurations on 72 questions, scored on whether the right passage is retrieved. |
 | `eval_answers.py` | End-to-end benchmark: 31 questions through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
-| `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `GET /documents`, `GET /financials`, `GET /health`. |
+| `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `GET /documents`, `GET /financials`, `GET /usage`, `GET /health`. |
+| `usage.py` | Usage limits: questions and uploads per user per month, questions per minute, and a daily cap across all users. |
 | `app.py` | Streamlit chat UI with expandable source citations and a sidebar for uploading PDFs. |
 | `evaluate.py` | RAGAs evaluation (faithfulness, answer relevancy) with a before/after comparison table. |
 | `start.py` | One-command boot: checks config, ingests if needed, starts both servers, opens the browser. |
@@ -380,6 +381,30 @@ your filings and the shared samples. Uploading a file with the same name as one 
 own **replaces** it rather than duplicating its passages; other users' files are never
 affected. Scanned PDFs without a text layer are rejected — run OCR first.
 
+### Usage limits
+
+Every question makes up to four gpt-4o-mini calls and every upload embeds a whole filing,
+so on a public site anyone who signs up spends your OpenAI money. `usage.py` caps it:
+
+| Limit | Default | Environment variable |
+| --- | --- | --- |
+| Questions per user per month | 50 | `QUESTIONS_PER_MONTH` |
+| Uploads per user per month | 3 | `UPLOADS_PER_MONTH` |
+| Questions per user per minute | 5 | `QUESTIONS_PER_MINUTE` |
+| Questions per day, all users together | 500 | `QUESTIONS_PER_DAY_ALL_USERS` |
+| Pages per uploaded PDF | 500 | `MAX_UPLOAD_PAGES` in `api.py` |
+
+Months and days are UTC calendar periods. Set a variable to `0` to turn that limit off;
+the API reads them from `.env`. Sign-up is free, so per-user limits alone don't bound
+the bill: the daily cap does. A question costs about $0.001 on average and rarely more
+than $0.002, so 500 a day comes to at most about $30 a month. Set a monthly spending cap
+in your OpenAI account as well.
+
+Requests that fail (an API error, a PDF that won't ingest) are refunded. A request over
+a limit gets `429` with a `Retry-After` header and a message the UI shows as is; the
+sidebar shows the user's counts for the month. The `local` user, which exists only when
+login is disabled, is never limited. Counts are kept in `chroma_db/usage.sqlite3`.
+
 ### Running the pieces individually
 
 ```bash
@@ -511,7 +536,8 @@ curl -X POST http://localhost:8000/documents -H "X-User-Id: local" -F "file=@mic
 
 The filename is reduced to a safe basename (`[A-Za-z0-9._-]`), which is what citations
 show. Status codes: `201` indexed · `413` too large · `415` not a PDF · `422` no
-extractable text or unreadable PDF · `500` ingestion error.
+extractable text, unreadable PDF or over 500 pages · `429` monthly upload limit reached ·
+`500` ingestion error.
 
 `GET /documents` lists the caller's files and the shared samples (`"shared": true`), with
 the number of structured figures extracted from each and the company named on its cover
@@ -520,6 +546,12 @@ page (`null` if none was found):
 
 `GET /financials` (optional `?source_file=`) lists those figures, each with its value,
 fiscal year, page and the row as printed: `{"figures": [{"metric": "revenue", …}]}`.
+
+`GET /usage` returns the caller's counts for this month and the limits they count
+against (`0` = unlimited), with the date the counts reset:
+`{"questions": 12, "question_limit": 50, "uploads": 1, "upload_limit": 3, "resets": "2026-11-01"}`.
+`POST /query` answers `429` once a question limit is reached (see
+[Usage limits](#usage-limits)).
 
 ---
 
@@ -543,7 +575,8 @@ BM25 parameters, fusion weights and the tokenizer live in `hybrid.py`.
 Chunking is configured in `ingest.py` (`CHUNK_SIZE`, `CHUNK_OVERLAP`). Changing either
 requires a re-ingest: `python start.py --reingest`.
 
-The only required environment variable is `OPENAI_API_KEY`, read from `.env`.
+The only required environment variable is `OPENAI_API_KEY`, read from `.env`. The usage
+limits are optional variables in the same file (see [Usage limits](#usage-limits)).
 
 ---
 
@@ -720,6 +753,8 @@ pytest
 Tests cover:
 - the chunking logic and prompt formatting;
 - the upload path: validation, staging, replace-on-reupload;
+- usage limits: monthly, per-minute and daily caps, calendar resets, refunds of failed
+  requests, `429` responses, and that an over-limit upload is never ingested;
 - hybrid search: the tokenizer, BM25, query profiles, rank fusion and citation excerpts;
 - answer checking: blended figures, real figures cited to the wrong page, citations of
   pages that weren't retrieved, figures quoted from the question, and the retry and
