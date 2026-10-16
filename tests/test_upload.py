@@ -249,6 +249,74 @@ def test_retrieval_never_returns_another_users_chunks(store, tmp_path, monkeypat
     assert owners == {ALICE, BOB, ingest.PUBLIC_OWNER}
 
 
+@pytest.fixture
+def keyword_only(store, monkeypatch):
+    """Fake embeddings rank arbitrarily, so drop every semantic hit and test BM25 alone."""
+    monkeypatch.setattr(rag, "_get_reranker", lambda: _FakeReranker())
+    monkeypatch.setattr(rag, "SCORE_THRESHOLD", float("inf"))
+    monkeypatch.setattr(rag, "TOP_K", 100)
+
+
+@pytest.mark.filterwarnings("ignore:Relevance scores must be between 0 and 1")
+def test_keyword_search_never_returns_another_users_chunks(keyword_only, tmp_path, monkeypatch):
+    _fake_pdf(monkeypatch, ["Short-term unearned revenue 57,582"])
+    ingest.ingest_file(tmp_path / "sample.pdf", ingest.PUBLIC_OWNER)
+    ingest.ingest_file(tmp_path / "alice.pdf", ALICE)
+    ingest.ingest_file(tmp_path / "bob.pdf", BOB)
+    vectorstore = ingest.open_vectorstore()
+
+    for asker, visible in [(ALICE, {ALICE, ingest.PUBLIC_OWNER}), (BOB, {BOB, ingest.PUBLIC_OWNER})]:
+        found = rag.retrieve_and_rerank("unearned revenue 57,582", vectorstore, asker)
+        assert {d.metadata["owner"] for d in found} == visible
+
+
+@pytest.mark.filterwarnings("ignore:Relevance scores must be between 0 and 1")
+def test_keyword_hits_carry_their_provenance(keyword_only, tmp_path, monkeypatch):
+    _fake_pdf(monkeypatch, ["Total revenue 245,122", "Goodwill 119,220"])
+    ingest.ingest_file(tmp_path / "acme.pdf", ALICE)
+    vectorstore = ingest.open_vectorstore()
+
+    [doc] = rag.retrieve_and_rerank("Where is 245,122 reported?", vectorstore, ALICE)
+    assert (doc.metadata["source_file"], doc.metadata["page"]) == ("acme.pdf", 0)
+    trace = doc.metadata["retrieval"]
+    assert trace["matched_by"] == ["keyword"]
+    assert trace["keyword_rank"] == 1
+    assert trace["matched_terms"] == ["245122"]
+    assert trace["exact_value_match"] is True
+    assert trace["chunk_id"] == doc.id
+
+    [source] = rag.build_sources("Where is 245,122 reported?", [doc])
+    assert source["retrieval"] is trace
+    # The stored chunk isn't touched: the trace lives on a copy
+    stored = vectorstore.get(ids=[doc.id], include=["metadatas"])["metadatas"][0]
+    assert "retrieval" not in stored
+
+
+@pytest.mark.filterwarnings("ignore:Relevance scores must be between 0 and 1")
+def test_keyword_search_forgets_replaced_filings(keyword_only, tmp_path, monkeypatch):
+    vectorstore = ingest.open_vectorstore()
+    _fake_pdf(monkeypatch, ["Goodwill 119,220"])
+    ingest.ingest_file(tmp_path / "acme.pdf", ALICE)
+    assert rag.retrieve_and_rerank("goodwill", vectorstore, ALICE)
+
+    _fake_pdf(monkeypatch, ["Revised: total revenue 245,122"])
+    ingest.ingest_file(tmp_path / "acme.pdf", ALICE)
+    assert rag.retrieve_and_rerank("goodwill", vectorstore, ALICE) == []
+    [doc] = rag.retrieve_and_rerank("revenue", vectorstore, ALICE)
+    assert doc.page_content == "Revised: total revenue 245,122"
+
+
+@pytest.mark.filterwarnings("ignore:Relevance scores must be between 0 and 1")
+def test_hybrid_search_can_be_switched_off(keyword_only, tmp_path, monkeypatch):
+    _fake_pdf(monkeypatch, ["Goodwill 119,220"])
+    ingest.ingest_file(tmp_path / "acme.pdf", ALICE)
+    vectorstore = ingest.open_vectorstore()
+    # Semantic hits are all filtered out here, so without keyword search nothing is left
+    assert rag.retrieve_and_rerank("goodwill", vectorstore, ALICE, keyword=False) == []
+    monkeypatch.setattr(rag, "HYBRID_SEARCH", False)
+    assert rag.retrieve_and_rerank("goodwill", vectorstore, ALICE) == []
+
+
 def test_main_ingests_public_samples_and_each_users_uploads(
     store, data_dir, monkeypatch
 ):

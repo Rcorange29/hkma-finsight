@@ -9,7 +9,7 @@ an answer with page-level citations, refusing to guess when the figure isn't in 
 documents.
 
 Built with LangChain, ChromaDB, OpenAI (`gpt-4o-mini` + `text-embedding-3-small`),
-a cross-encoder reranker, FastAPI and Streamlit.
+hybrid semantic + BM25 keyword search, a cross-encoder reranker, FastAPI and Streamlit.
 
 ---
 
@@ -30,10 +30,14 @@ stranding a number from its row label. `ingest.py` detects contiguous table-like
 a word-joiner placeholder so the token splitter treats each table block as one unit,
 then restores them after splitting.
 
-**Threshold filtering + reranking.** Retrieval pulls 20 candidates, drops anything below
-a relevance floor, reranks the survivors with `cross-encoder/ms-marco-MiniLM-L-6-v2`, and
-sends only the top 5 to the LLM. If nothing clears the floor, the API says so instead of
-answering from parametric memory.
+**Hybrid retrieval + reranking.** Embeddings find passages that mean the same thing as the
+question but blur exact tokens: fiscal years, line-item labels, precise values. So two
+searches run side by side: semantic (20 candidates above a relevance floor) and BM25
+keyword search (20 more) that treats "245,122", "$245,122" and "245122" as one token and
+"FY24" as "fiscal 2024". Their rankings are fused, `cross-encoder/ms-marco-MiniLM-L-6-v2`
+reranks the union, and only the top 5 go to the LLM. Every citation records how its chunk
+was found. If neither search finds anything, the API says so instead of answering from
+parametric memory. See [Hybrid retrieval](#hybrid-retrieval).
 
 **A prompt that forbids arithmetic.** For questions that go to text retrieval, the system
 prompt allows only figures that appear verbatim in the retrieved excerpts — no computing, deriving, or combining rows — and
@@ -54,8 +58,8 @@ requires a `(file.pdf, p.NN)` citation after each claim. Anything missing comes 
                    ├─ metric ──► analysis.py: Decimal math over figures ◄┘
                    │                 └─► answer with every input cited (page + row)
                    │
-                   └─ other ───► similarity search (k=20) ─► score filter
-                                    ─► cross-encoder rerank (top 5)
+                   └─ other ───► semantic search (k=20) + BM25 keyword search (k=20)
+                                    ─► rank fusion ─► cross-encoder rerank (top 5)
                                     ─► gpt-4o-mini + strict prompt ─► answer + citations
 
                           api.py (FastAPI :8000) ◄── app.py (Streamlit :8501)
@@ -67,7 +71,9 @@ requires a `(file.pdf, p.NN)` citation after each claim. Anything missing comes 
 | `financials.py` | Extracts the income statement, balance sheet and cash flow statement into verified, cited figures; stores them in SQLite. |
 | `analysis.py` | Deterministic calculations (margins, ratios, returns, growth, YoY, CAGR) over those figures, and the cited write-up. |
 | `router.py` | Plans each question and sends it to the analysis engine or to text retrieval. |
-| `rag.py` | Retrieval, score-threshold filtering, cross-encoder reranking, prompting. Exposes `query()`. |
+| `rag.py` | Hybrid retrieval, score-threshold filtering, cross-encoder reranking, prompting. Exposes `query()`. |
+| `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
+| `eval_retrieval.py` | Retrieval benchmark: semantic-only vs hybrid, scored on whether the right figure is retrieved. |
 | `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `GET /documents`, `GET /financials`, `GET /health`. |
 | `app.py` | Streamlit chat UI with expandable source citations and a sidebar for uploading PDFs. |
 | `evaluate.py` | RAGAs evaluation (faithfulness, answer relevancy) with a before/after comparison table. |
@@ -145,6 +151,52 @@ re-embedding them:
 python financials.py                        # (re)extract figures for every PDF in data/
 python financials.py data/some-10k.pdf      # print what would be extracted from one PDF
 ```
+
+---
+
+## Hybrid retrieval
+
+Financial questions are full of exact tokens: "fiscal 2024", "short-term unearned
+revenue", "57,582". Embeddings capture meaning but treat those loosely. In the benchmark
+below, semantic search ranked the balance-sheet chunk with short-term unearned revenue
+only 11th, and never found the passage with the employee count. So `rag.py` runs two
+searches over the same chunks and combines them.
+
+1. **Semantic.** The question is embedded, and the top 20 chunks above `SCORE_THRESHOLD`
+   are kept, as before.
+2. **Keyword (BM25).** `hybrid.py` scores every chunk the caller may see with Okapi BM25.
+   Its tokenizer is built for filings:
+   - numbers lose their grouping commas and `$`, so "$ 245,122", "245,122" and "245122"
+     all match;
+   - "FY24", "FY2024" and "FY '24" become "fiscal 2024", the way filings write it;
+   - plurals fold ("liabilities" matches "liability") and stopwords drop.
+
+   The index is built lazily from ChromaDB and cached in the API process. Each query reads
+   only chunks added since the last one, and replaced filings drop out.
+3. **Query-aware fusion.** The two rankings are merged with weighted reciprocal rank
+   fusion. The keyword ranking weighs more when the question quotes a value (2.0), the
+   same as semantic when it names a year (1.0), and less for purely conceptual questions
+   (0.75).
+4. **Rerank.** The cross-encoder scores the top 30 fused candidates. When the question
+   quotes exact values, chunks containing all of them go first, because the cross-encoder
+   is weak at matching numbers. The top 5 go to the LLM.
+
+**Provenance.** Every retrieved chunk carries a `retrieval` record, and the API returns it
+with each citation. It says:
+- which search found the chunk (`matched_by`), with each search's rank and score;
+- the query terms it matched;
+- the cross-encoder score;
+- whether it contains the quoted values;
+- Chroma's `chunk_id`.
+
+The UI shows a one-line summary under each citation. The citation excerpt is the
+stretch of the chunk that matches the question, so the figure is visible.
+
+**Isolation.** The keyword path is scoped by the same owner filter as the semantic one,
+applied by Chroma before any scoring. Term statistics come only from chunks the caller
+may see, so one user's filings never influence another's results. Tests cover both.
+
+`HYBRID_SEARCH=0` switches back to the semantic-only pipeline, unchanged from before.
 
 ---
 
@@ -313,7 +365,8 @@ input figure, and `sources` holds one citation per input row:
 ```
 
 Other questions return `"route": "text"`, an empty `calculations` list, and the
-retrieved passages as `sources`.
+retrieved passages as `sources`. Each of those carries a `retrieval` record of how its
+chunk was found; see [Hybrid retrieval](#hybrid-retrieval).
 
 Status codes: `422` empty question · `503` vector store missing (run `ingest.py` or
 upload a PDF) · `500` inference error. `GET /health` returns `{"status": "ok"}`.
@@ -347,11 +400,15 @@ Retrieval behaviour is tuned by the constants at the top of `rag.py`:
 
 | Constant | Default | Meaning |
 | --- | --- | --- |
-| `RETRIEVE_K` | `20` | Candidates pulled from ChromaDB before filtering. |
-| `SCORE_THRESHOLD` | `0.10` | Minimum relevance score; below this a chunk is discarded. |
+| `RETRIEVE_K` | `20` | Semantic candidates pulled from ChromaDB before filtering. |
+| `SCORE_THRESHOLD` | `0.10` | Minimum semantic relevance score; below this a semantic hit is discarded. |
+| `KEYWORD_K` | `20` | BM25 candidates. |
+| `RERANK_CANDIDATES` | `30` | Fused candidates the cross-encoder scores. |
 | `TOP_K` | `5` | Chunks sent to the LLM after reranking. |
+| `HYBRID_SEARCH` | env, `1` | Set the `HYBRID_SEARCH` environment variable to `0` for semantic-only retrieval. |
 | `RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder used for reranking. |
 
+BM25 parameters, fusion weights and the tokenizer live in `hybrid.py`.
 Chunking is configured in `ingest.py` (`CHUNK_SIZE`, `CHUNK_OVERLAP`). Changing either
 requires a re-ingest: `python start.py --reingest`.
 
@@ -408,6 +465,45 @@ Two things to know before reading the numbers:
   bare `page_content` makes the page citation the prompt mandates look like an unsupported
   claim, which pins faithfulness near 0.5 for every correctly-cited answer.
 
+### Retrieval benchmark
+
+```bash
+python eval_retrieval.py
+```
+
+Scores retrieval alone, with no LLM calls apart from embedding the questions (well under a
+cent). A question counts as a hit when a retrieved chunk contains its evidence: the
+figure from the ground truth, exactly as the filing prints it. Two question sets:
+
+- 26 of the `evaluate.py` questions, the ones whose ground truth has a figure or name
+  to look for;
+- 10 exact-term questions, typed the way analysts do: "FY24 additions to property and
+  equipment", "Where does the filing report 245,122?".
+
+| Question set | Pipeline | Hit@1 | Hit@5 (sent to the LLM) | MRR |
+| --- | --- | --- | --- | --- |
+| `evaluate.py` (26) | semantic only | 16 | 24 | 0.738 |
+| | **hybrid** | **17** | **25** | **0.777** |
+| Exact-term (10) | semantic only | 7 | 9 | 0.783 |
+| | **hybrid** | **8** | **10** | **0.883** |
+
+Two questions semantic search missed entirely are now answered:
+- the employee count, a narrative passage the embeddings never surfaced;
+- "Where does the filing report 245,122?".
+
+Other ranks moved, but the hit counts barely changed. What these numbers do and don't show:
+- **The cross-encoder is now the bottleneck.** In 4 of the 11 questions where the top chunk
+  is wrong, one of the two searches had ranked the right chunk first. The reranker then
+  demoted it, usually in favour of a related note or the stockholders' equity statement.
+- **Two ideas were tested and dropped.** Feeding the reranker only the matching window of
+  each chunk lost the statement heading and dropped MRR from 0.79 to 0.69. Blending the
+  reranker's ranking with the first-stage ranks didn't help either.
+- **The fusion weights hardly matter at these sizes.** The 30 reranked candidates cover
+  nearly the whole union of the two 20-chunk lists, so the cross-encoder decides the
+  order. The weights only decide which candidates get cut when the union is larger.
+- **This is one filing and 36 questions.** Treat single-question differences as
+  anecdotes.
+
 ---
 
 ## Tests
@@ -417,19 +513,24 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Tests cover the chunking logic, prompt formatting, the upload path (validation, staging,
-replace-on-reupload), per-user isolation (user-id validation, and retrieval against a
-temporary ChromaDB with fake embeddings and reranker that never returns another user's
-chunks), and the analysis engine:
-
-- **extraction**: number parsing, year-column verification (wrong-year and invented values
-  rejected), wrapped and mis-encoded labels, ambiguous rows, scaling and sign rules, page
-  selection, and owner-scoped storage, against statement text as PyPDF extracts it;
-- **calculations**: exact `Decimal` results checked by hand against Microsoft's 10-K,
-  formula fallbacks, missing inputs, zero denominators, YoY and CAGR, and that every
-  input is cited in the answer;
-- **routing**: calculation vs. text, fallbacks, and that the planner and engine only see
-  the caller's figures.
+Tests cover:
+- the chunking logic and prompt formatting;
+- the upload path: validation, staging, replace-on-reupload;
+- hybrid search: the tokenizer, BM25, query profiles, rank fusion and citation excerpts;
+- per-user isolation: user-id validation, and retrieval against a temporary ChromaDB (fake
+  embeddings and reranker). Neither the semantic nor the keyword path returns another
+  user's chunks, keyword hits carry their provenance, and replaced filings drop out of the
+  keyword index;
+- the analysis engine:
+  - **extraction**: number parsing, year-column verification (wrong-year and invented
+    values rejected), wrapped and mis-encoded labels, ambiguous rows, scaling and sign
+    rules, page selection, and owner-scoped storage, against statement text as PyPDF
+    extracts it;
+  - **calculations**: exact `Decimal` results checked by hand against Microsoft's 10-K,
+    formula fallbacks, missing inputs, zero denominators, YoY and CAGR, and that every
+    input is cited in the answer;
+  - **routing**: calculation vs. text, fallbacks, and that the planner and engine only see
+    the caller's figures.
 
 None need an API key or network access. The planner's routing on real questions is an
 opt-in test that calls OpenAI:
@@ -437,6 +538,12 @@ opt-in test that calls OpenAI:
 ```bash
 RUN_LIVE_TESTS=1 pytest tests/test_planner_live.py
 ```
+
+CI (`.github/workflows/ci.yml`) runs ruff and the tests on Python 3.11 and 3.12 for every
+pull request, and `main` requires those checks to pass before anything merges. Pull
+requests from the repo owner and Dependabot merge automatically once they're green
+(`.github/workflows/automerge.yml`); open one as a draft, or with the `no-automerge`
+label, to keep it open. PRs that change workflow files are left to merge by hand.
 
 ---
 

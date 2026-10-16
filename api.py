@@ -55,10 +55,24 @@ class QueryRequest(BaseModel):
     question: str
 
 
+class RetrievalTrace(BaseModel):
+    """How a cited chunk was found (see rag.retrieve_and_rerank)."""
+    chunk_id: str
+    matched_by: list[str]                 # "semantic" and/or "keyword"
+    semantic_rank: int | None = None
+    semantic_score: float | None = None
+    keyword_rank: int | None = None
+    keyword_score: float | None = None
+    matched_terms: list[str] = []         # query terms the chunk contains
+    rerank_score: float | None = None
+    exact_value_match: bool = False       # contains every value the question quotes
+
+
 class SourceCitation(BaseModel):
     source_file: str
     page: int | str
     excerpt: str
+    retrieval: RetrievalTrace | None = None
 
 
 class Figure(BaseModel):

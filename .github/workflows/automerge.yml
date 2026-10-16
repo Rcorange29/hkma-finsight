@@ -1,0 +1,38 @@
+name: Auto-merge
+
+# Queues the owner's and Dependabot's pull requests to merge as soon as the
+# required CI checks pass. To keep a PR open, create it as a draft or with the
+# `no-automerge` label; to stop one already queued, use "Disable auto-merge" on
+# the PR page (or `gh pr merge --disable-auto <number>`).
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    name: Enable auto-merge
+    if: >-
+      !github.event.pull_request.draft &&
+      !contains(github.event.pull_request.labels.*.name, 'no-automerge') &&
+      (github.event.pull_request.user.login == github.repository_owner ||
+       github.event.pull_request.user.login == 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # GITHUB_TOKEN isn't allowed to merge changes to workflow files, so
+          # those PRs are left for a person to merge.
+          if gh pr diff "$PR" --name-only | grep -q '^\.github/workflows/'; then
+            echo "::notice::This PR changes workflow files; merge it by hand."
+            exit 0
+          fi
+          gh pr merge "$PR" --auto --merge
