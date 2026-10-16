@@ -172,9 +172,9 @@ def test_render_cites_every_input_number():
     series = analyze(_facts(), ["operating_margin"], [], True)
     text, sources = render(series)
     assert "**FY2024: 44.6%** = Operating income ÷ Total revenue" in text
-    assert "Operating income FY2024: $109,433 million (msft.pdf, p.66)" in text
-    assert "Total revenue FY2024: $245,122 million (msft.pdf, p.66)" in text
-    assert "Total revenue FY2023: $211,915 million (msft.pdf, p.66)" in text
+    assert "Operating income FY2024: $109,433 million (msft.pdf, p.67)" in text
+    assert "Total revenue FY2024: $245,122 million (msft.pdf, p.67)" in text
+    assert "Total revenue FY2023: $211,915 million (msft.pdf, p.67)" in text
     # 44.644% - 41.773% = 2.871 points: computed from exact values, not the
     # rounded ones shown (44.6 - 41.8 would give 2.8)
     assert "Change FY2023 → FY2024: +2.9 percentage points" in text
@@ -187,7 +187,7 @@ def test_render_cites_every_input_number():
 
 def test_render_line_item_growth():
     text, _ = render(analyze(_facts(), ["revenue"], [2022, 2023, 2024], False))
-    assert "**FY2024: $245,122 million** (msft.pdf, p.66)" in text
+    assert "**FY2024: $245,122 million** (msft.pdf, p.67)" in text
     assert "Change FY2023 → FY2024: +$33,207 million (+15.7%)" in text
     assert "Compound annual growth FY2022 → FY2024: 11.2% a year" in text
 
@@ -203,4 +203,4 @@ def test_render_shows_the_printed_label_when_it_differs():
              for f in _facts()]
     text, _ = render(analyze(facts, ["free_cash_flow"], [2024], False))
     assert ("Capital expenditures (“Additions to property and equipment”) FY2024: "
-            "$44,477 million (msft.pdf, p.70)") in text
+            "$44,477 million (msft.pdf, p.71)") in text

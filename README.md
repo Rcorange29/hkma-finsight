@@ -46,12 +46,12 @@ requires a `(file.pdf, p.NN)` citation after each claim. Anything missing comes 
 "not found in context".
 
 **…and code that checks the answer anyway.** The prompt isn't enough on its own. Asked
-for Activision Blizzard's goodwill, gpt-4o-mini was given "Goodwill 50,969" (p.89) and
-"$51.0 billion" (p.93), and answered "$51,969 million (p.92)" five times out of five: a
+for Activision Blizzard's goodwill, gpt-4o-mini was given "Goodwill 50,969" (p.90) and
+"$51.0 billion" (p.94), and answered "$51,969 million (p.92)" five times out of five: a
 blend of the two, cited to a page that holds neither. So `rag.check_answer` compares every
 text answer against its excerpts before it is returned:
 - every comma-grouped or decimal figure must be printed on the page cited right after it;
-- every citation must name a retrieved page, by its index or its 1-based label.
+- every citation must name a retrieved page.
 
 If the check fails, the model is asked once more with the problems spelled out. That
 fixed the goodwill answer to "$51.0 billion (p.94)". If the retry fails too, the answer
@@ -102,9 +102,9 @@ answer is computed, not generated:
 ```
 Free cash flow margin · microsoft-sec-10k.pdf
 - FY2023: 28.1% = (Net cash from operating activities − Capital expenditures) ÷ Total revenue, from:
-    - Net cash from operating activities ("Net cash from operations") FY2023: $87,582 million (microsoft-sec-10k.pdf, p.70)
-    - Capital expenditures ("Additions to property and equipment") FY2023: $28,107 million (microsoft-sec-10k.pdf, p.70)
-    - Total revenue FY2023: $211,915 million (microsoft-sec-10k.pdf, p.66)
+    - Net cash from operating activities ("Net cash from operations") FY2023: $87,582 million (microsoft-sec-10k.pdf, p.71)
+    - Capital expenditures ("Additions to property and equipment") FY2023: $28,107 million (microsoft-sec-10k.pdf, p.71)
+    - Total revenue FY2023: $211,915 million (microsoft-sec-10k.pdf, p.67)
 - FY2024: 30.2% = … (same inputs for FY2024)
 - Change FY2023 → FY2024: +2.2 percentage points
 ```
@@ -401,7 +401,7 @@ input figure, and `sources` holds one citation per input row:
           "metric": "total_current_assets", "name": "Total current assets",
           "fiscal_year": 2024, "value": "159734000000", "unit": "USD",
           "display": "$159,734 million", "label": "Total current assets",
-          "source_file": "microsoft-sec-10k.pdf", "page": 68,
+          "source_file": "microsoft-sec-10k.pdf", "page": 69,
           "line": "Total current assets   159,734    184,257", "shared": true
         },
         { "metric": "total_current_liabilities", "…": "…" }
@@ -409,9 +409,9 @@ input figure, and `sources` holds one citation per input row:
     }
   ],
   "sources": [
-    { "source_file": "microsoft-sec-10k.pdf", "page": 68,
+    { "source_file": "microsoft-sec-10k.pdf", "page": 69,
       "excerpt": "Total current assets   159,734    184,257" },
-    { "source_file": "microsoft-sec-10k.pdf", "page": 68,
+    { "source_file": "microsoft-sec-10k.pdf", "page": 69,
       "excerpt": "Total current liabilities   125,286    104,149" }
   ]
 }
@@ -636,8 +636,13 @@ label, to keep it open. PRs that change workflow files are left to merge by hand
 
 ## Notes and limitations
 
-- Costs money: ingestion embeds every chunk and makes one extraction call per filing, and
-  each query calls `gpt-4o-mini` (plus one small planning call).
+- Costs money: ingestion embeds every chunk and makes one extraction call per filing.
+  Each question makes a small planning call. Text questions also make an LLM reranking
+  call (about 11,000 input tokens), the answer call, and a retry if the answer check
+  fails. All of these use `gpt-4o-mini`.
+- Page numbers in citations count from 1, as PDF viewers and the filings' printed page
+  footers do ("p.67" is the 67th page of the PDF). They're stored as 0-based indexes and
+  converted for display (`financials.page_number`), so no re-ingest is needed.
 - The analysis engine reads the three primary statements only. Figures that appear only in
   notes or MD&A (segment revenue, for example) are answered by text retrieval, which won't
   calculate. Amounts are assumed to be in US dollars, as in SEC filings, and a statement

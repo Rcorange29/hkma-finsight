@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from itertools import pairwise
 
-from financials import LINE_ITEMS, Fact, same_words
+from financials import LINE_ITEMS, Fact, page_number, same_words
 
 # ---------------------------------------------------------------------------
 # Metric catalog
@@ -268,7 +268,7 @@ def format_change(metric: Metric, change: Change) -> str:
 
 
 def cite(fact: Fact) -> str:
-    return f"({fact.source_file}, p.{fact.page})"
+    return f"({fact.source_file}, p.{page_number(fact.page)})"
 
 
 def _describe_input(fact: Fact) -> str:
@@ -303,7 +303,8 @@ def render(series: list[Series]) -> tuple[str, list[dict]]:
                 lines += [f"    - {_describe_input(f)}" for f in r.inputs]
             for f in r.inputs:
                 sources[(f.source_file, f.page, f.line)] = {
-                    "source_file": f.source_file, "page": f.page, "excerpt": f.line,
+                    "source_file": f.source_file, "page": page_number(f.page),
+                    "excerpt": f.line,
                 }
         for c in s.changes:
             lines.append(f"- Change FY{c.from_year} → FY{c.to_year}: {format_change(s.metric, c)}")

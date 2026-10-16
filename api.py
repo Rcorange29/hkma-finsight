@@ -130,7 +130,8 @@ class FigureList(BaseModel):
 
 def _figure(fact: financials.Fact, shared: bool = False) -> Figure:
     return Figure(
-        source_file=fact.source_file, page=fact.page, line=fact.line, label=fact.label,
+        source_file=fact.source_file, page=financials.page_number(fact.page), line=fact.line,
+        label=fact.label,
         metric=fact.metric, name=financials.LINE_ITEMS[fact.metric].name,
         fiscal_year=fact.fiscal_year, value=str(fact.value), unit=fact.unit,
         display=analysis.format_value(fact.value, fact.unit), shared=shared,

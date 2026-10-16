@@ -85,7 +85,7 @@ def test_calculation_is_answered_deterministically(text_calls):
     result = router.answer("What was the operating margin?", "alice", planner=_plan())
     assert result.route == "calculation"
     assert "**FY2024: 44.6%**" in result.answer
-    assert "Operating income FY2024: $109,433 million (msft.pdf, p.66)" in result.answer
+    assert "Operating income FY2024: $109,433 million (msft.pdf, p.67)" in result.answer
     assert {s["excerpt"] for s in result.sources} == {
         "Operating income   109,433", "Total revenue   245,122"}
     assert text_calls == []
@@ -183,7 +183,7 @@ def test_query_returns_structured_calculations(client, text_calls, monkeypatch):
     assert fy24["formula"] == "Operating income ÷ Total revenue"
     [op, rev] = fy24["inputs"]
     assert (op["metric"], op["value"], op["page"], op["shared"]) == (
-        "operating_income", "109433000000", 66, True)
+        "operating_income", "109433000000", 67, True)
     assert rev["line"] == "Total revenue   245,122"
 
 
