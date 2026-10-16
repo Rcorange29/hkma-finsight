@@ -40,6 +40,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import BaseModel, Field
 
 import hybrid
+from financials import page_number
 from ingest import PUBLIC_OWNER
 
 load_dotenv()
@@ -69,7 +70,7 @@ STRICT RULES — follow these exactly:
    "not found in context" for that specific item. Never guess or estimate.
 3. Do not add commentary, context, or assumptions beyond what is directly stated.
 4. After each claim, cite the source document and page in parentheses, \
-   e.g. (microsoft-sec-10k.pdf, p.66).
+   e.g. (microsoft-sec-10k.pdf, p.67).
 5. The excerpts may come from more than one filing, each named in its Source line. \
    If more than one filing answers the question, answer for each one separately \
    under its company or file name; never merge, combine or compare figures across \
@@ -164,7 +165,7 @@ def doc_to_context(doc) -> str:
     source = meta.get("source_file", meta.get("source", "unknown"))
     if meta.get("company"):
         source = f"{source} ({meta['company']})"
-    page = meta.get("page", "?")
+    page = page_number(meta.get("page"))
     return f"Source: {source}, Page: {page}\n{doc.page_content}"
 
 
@@ -231,12 +232,13 @@ def check_answer(answer: str, question: str, docs: list) -> list[str]:
     """
     asked = _numbers(question)
 
-    # A page can be cited by its index (what the Source line shows) or by its
-    # label, the 1-based number PDF viewers and the printed page footers use
+    # A page is cited by the number on its Source line (page_number), or by its
+    # PDF page label where that differs, e.g. a roman-numbered front section
     on_page: dict[tuple[str, str], set[str]] = {}
     for doc in docs:
         source = doc.metadata.get("source_file", doc.metadata.get("source"))
-        for number in {doc.metadata.get("page"), doc.metadata.get("page_label")} - {None}:
+        numbers = {page_number(doc.metadata.get("page")), doc.metadata.get("page_label")}
+        for number in numbers - {None, "?"}:
             on_page.setdefault((source, str(number)), set()).update(_numbers(doc.page_content))
     anywhere = set().union(*on_page.values()) if on_page else set()
 
@@ -549,7 +551,7 @@ def build_sources(question: str, docs: list) -> list[dict]:
     for doc in docs:
         meta = doc.metadata
         source = meta.get("source_file", meta.get("source", "unknown"))
-        page = meta.get("page", "?")
+        page = page_number(meta.get("page"))
         key = (source, page)
         if key not in seen:
             seen.add(key)

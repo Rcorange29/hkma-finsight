@@ -51,6 +51,20 @@ MAX_STATEMENT_PAGES = 8
 # Canonical line items
 # ---------------------------------------------------------------------------
 
+
+def page_number(index) -> int | str:
+    """
+    The page number a reader sees for a stored page index.
+
+    Chunks and figures store PyPDF's 0-based page index; PDF viewers and the
+    pages' own printed footers ("67/139") count from 1. Every citation shows
+    this number, so "p.67" opens the right page. Unknown pages show as "?".
+    """
+    try:
+        return int(index) + 1
+    except (TypeError, ValueError):
+        return "?"
+
 @dataclass(frozen=True)
 class LineItem:
     key: str

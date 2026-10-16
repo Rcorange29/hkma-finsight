@@ -450,4 +450,4 @@ def test_llm_rank_keeps_valid_unique_positions(monkeypatch):
             for i in range(3)]
     assert rag.llm_rank("q?", docs) == [2, 0]
     assert "Question: q?" in prompts[0]
-    assert "[1] Source: a.pdf, Page: 0\ntext 0" in prompts[0]
+    assert "[1] Source: a.pdf, Page: 1\ntext 0" in prompts[0]
