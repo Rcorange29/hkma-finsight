@@ -304,6 +304,12 @@ replace-on-reupload), and per-user isolation: user-id validation, and retrieval 
 temporary ChromaDB (fake embeddings and reranker) that never returns another user's
 chunks. None need an API key or network access.
 
+CI (`.github/workflows/ci.yml`) runs ruff and the tests on Python 3.11 and 3.12 for every
+pull request, and `main` requires those checks to pass before anything merges. Pull
+requests from the repo owner and Dependabot merge automatically once they're green
+(`.github/workflows/automerge.yml`); open one as a draft, or with the `no-automerge`
+label, to keep it open. PRs that change workflow files are left to merge by hand.
+
 ---
 
 ## Notes and limitations
