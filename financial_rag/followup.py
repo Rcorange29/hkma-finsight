@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-import config
+from financial_rag import config
 
 MAX_TURNS = 6           # most recent messages used (3 questions and their answers)
 MAX_CHARS = 1500        # per message; long calculation answers are cut

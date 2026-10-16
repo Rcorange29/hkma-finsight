@@ -6,7 +6,7 @@ LLM reranking, answering, the answer retry) uses CHAT_MODEL. Set the
 CHAT_MODEL environment variable to try another model, and measure the change
 with eval_answers.py rather than guessing:
 
-    CHAT_MODEL=gpt-5-mini python eval_answers.py
+    CHAT_MODEL=gpt-5-mini python -m financial_rag.eval_answers
 """
 
 import os

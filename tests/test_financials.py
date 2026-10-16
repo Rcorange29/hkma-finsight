@@ -10,8 +10,8 @@ from decimal import Decimal
 
 import pytest
 
-import financials
-from financials import (
+from financial_rag import financials
+from financial_rag.financials import (
     Fact,
     RowMapping,
     extract_facts,

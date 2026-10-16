@@ -17,7 +17,14 @@ from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from itertools import pairwise
 
-from financials import BREAKDOWNS, ITEM_NAMES, LINE_ITEMS, Fact, page_number, same_words
+from financial_rag.financials import (
+    BREAKDOWNS,
+    ITEM_NAMES,
+    LINE_ITEMS,
+    Fact,
+    page_number,
+    same_words,
+)
 
 # ---------------------------------------------------------------------------
 # Metric catalog

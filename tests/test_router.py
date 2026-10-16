@@ -9,14 +9,10 @@ from decimal import Decimal
 import pytest
 from fastapi.testclient import TestClient
 
-import api
-import financials
-import ingest
-import rag
-import router
-from financials import LINE_ITEMS, Fact
-from ingest import PUBLIC_OWNER, Filing
-from router import QuestionPlan
+from financial_rag import api, financials, ingest, rag, router
+from financial_rag.financials import LINE_ITEMS, Fact
+from financial_rag.ingest import PUBLIC_OWNER, Filing
+from financial_rag.router import QuestionPlan
 
 M = Decimal(1_000_000)
 
@@ -374,7 +370,7 @@ def test_query_api_rejects_malformed_history(client, text_calls):
 
 
 def test_standalone_question_without_history_or_on_failure_keeps_the_question(monkeypatch):
-    import followup
+    from financial_rag import followup
 
     assert followup.standalone_question("Revenue?", []) == "Revenue?"
 
@@ -394,7 +390,7 @@ def test_standalone_question_without_history_or_on_failure_keeps_the_question(mo
 
 
 def test_the_transcript_keeps_the_last_turns_and_cuts_long_answers():
-    import followup
+    from financial_rag import followup
 
     history = [("user", f"q{i}") for i in range(10)] + [("assistant", "x" * 5000)]
     transcript = followup._transcript(history).splitlines()

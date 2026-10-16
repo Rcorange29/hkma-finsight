@@ -8,8 +8,8 @@ nothing here touches the vector store or the model.
 import pytest
 from langchain_core.documents import Document
 
-import rag
-from rag import _format_docs, doc_to_context
+from financial_rag import rag
+from financial_rag.rag import _format_docs, doc_to_context
 
 
 def _doc(content="Total revenue 245,122", page=66, source="microsoft-sec-10k.pdf"):
@@ -128,7 +128,7 @@ def test_an_answer_that_fails_twice_carries_a_warning(monkeypatch):
 
 @pytest.mark.parametrize(("index", "shown"), [(0, 1), (66, 67), ("66", 67), (None, "?"), ("?", "?")])
 def test_page_numbers_are_shown_the_way_pdf_viewers_count(index, shown):
-    from financials import page_number
+    from financial_rag.financials import page_number
     assert page_number(index) == shown
 
 

@@ -12,7 +12,7 @@ and it scores a correct "not found in context" as unfaithful. Its packages are
 not in requirements.txt; install them first (Python 3.12 or older):
 
     pip install -r requirements-ragas.txt
-    python evaluate.py
+    python -m financial_rag.evaluate
 
 EVAL_QUESTIONS is also used by eval_retrieval.py, which needs none of this, so
 the RAGAs imports are inside the functions that use them.
@@ -26,8 +26,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-import config
-import rag
+from financial_rag import config, rag
 
 load_dotenv()
 

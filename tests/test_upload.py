@@ -12,9 +12,7 @@ from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 from langchain_core.embeddings import DeterministicFakeEmbedding
 
-import api
-import ingest
-import rag
+from financial_rag import api, ingest, rag
 
 PDF_BYTES = b"%PDF-1.7\n fake body"
 ALICE = "0f8b1c2e-alice"

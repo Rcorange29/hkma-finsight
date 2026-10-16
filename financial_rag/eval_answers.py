@@ -16,13 +16,15 @@ FY2025 10-K. Questions that name no company are answered with both loaded:
 
 Also reports latency and tokens per question, with a cost estimate at list
 prices for the models in PRICES. Runs with config.CHAT_MODEL, so a model swap
-is measured, not guessed: CHAT_MODEL=<model> python eval_answers.py. A run costs about $0.05. Needs both samples in data/
-(microsoft-sec-10k.pdf, apple-sec-10k.pdf), ingested (python ingest.py) with
-their figures (python financials.py).
-Results go to answer_eval_results.json.
+is measured, not guessed: CHAT_MODEL=<model> python -m financial_rag.eval_answers.
+
+A run costs about $0.05. Needs both samples in data/ (microsoft-sec-10k.pdf,
+apple-sec-10k.pdf), ingested (python -m financial_rag.ingest) with their
+figures (python -m financial_rag.financials). Results go to
+answer_eval_results.json.
 
 Usage:
-    python eval_answers.py
+    python -m financial_rag.eval_answers
 """
 
 from __future__ import annotations
@@ -35,8 +37,7 @@ from pathlib import Path
 
 from langchain_core.callbacks import get_usage_metadata_callback
 
-import config
-import router
+from financial_rag import config, router
 
 OWNER = "answer-eval"       # sees the public samples only
 RESULTS_PATH = Path("answer_eval_results.json")

@@ -1,9 +1,6 @@
 import pytest
 
-import financials
-import ingest
-import rag
-import usage
+from financial_rag import financials, ingest, rag, usage
 
 
 @pytest.fixture(autouse=True)

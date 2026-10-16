@@ -29,8 +29,8 @@ Records live in a SQLite file inside the vector store directory, so rebuilding
 the store (start.py --reingest) rebuilds both together.
 
 Usage:
-    python financials.py              # (re)extract figures for every PDF in data/
-    python financials.py FILE.pdf     # print the figures extracted from one PDF
+    python -m financial_rag.financials              # (re)extract figures for every PDF in data/
+    python -m financial_rag.financials FILE.pdf     # print the figures extracted from one PDF
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ from typing import Literal
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-import config
+from financial_rag import config
 
 load_dotenv()
 

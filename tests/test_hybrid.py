@@ -4,7 +4,7 @@ from collections import Counter
 
 import pytest
 
-from hybrid import (
+from financial_rag.hybrid import (
     KEYWORD_WEIGHT_AMOUNT,
     KEYWORD_WEIGHT_DEFAULT,
     KEYWORD_WEIGHT_YEAR,

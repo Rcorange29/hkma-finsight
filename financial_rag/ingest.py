@@ -18,7 +18,7 @@ Chunking strategy:
     rows are temporarily joined so the splitter never cuts across them.
 
 Usage:
-    python ingest.py
+    python -m financial_rag.ingest
 """
 
 import re
@@ -31,8 +31,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-import config
-import financials
+from financial_rag import config, financials
 
 load_dotenv()
 
