@@ -16,7 +16,11 @@
 services:
   api:
     build: .
-    env_file: .env                     # OPENAI_API_KEY
+    env_file: .env                     # OPENAI_API_KEY, COGNITO_ISSUER, COGNITO_CLIENT_ID
+    environment:
+      # 1 = trust X-User-Id (local mode, no login). Never on a public host: there
+      # the API verifies each request's Cognito ID token instead.
+      AUTH_DISABLED: ${AUTH_DISABLED:-0}
     ports:
       # Loopback only: the API trusts the X-User-Id header, so it must never
       # be reachable from outside. Published here just for local debugging.

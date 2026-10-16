@@ -4,6 +4,14 @@ from financial_rag import financials, ingest, rag, usage
 
 
 @pytest.fixture(autouse=True)
+def trusted_user_header(monkeypatch):
+    """Tests name users with X-User-Id (local mode); test_auth.py tests tokens."""
+    monkeypatch.setenv("AUTH_DISABLED", "1")
+    monkeypatch.delenv("COGNITO_ISSUER", raising=False)
+    monkeypatch.delenv("COGNITO_CLIENT_ID", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def isolated_facts_db(tmp_path, monkeypatch):
     """Every test gets its own figures database, never the real chroma_db/ one."""
     monkeypatch.setattr(financials, "FACTS_DB", tmp_path / "facts" / "financials.sqlite3")

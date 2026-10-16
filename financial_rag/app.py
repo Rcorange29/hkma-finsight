@@ -10,11 +10,15 @@ Requires the FastAPI server to be running:
 
 Login uses Streamlit's built-in OIDC support (st.login) against Amazon Cognito,
 configured in .streamlit/secrets.toml (see .streamlit/secrets.toml.example).
+Every API call carries the user's Cognito ID token, which the API verifies.
 For local development without Cognito, set AUTH_DISABLED=1 to run as a single
 "local" user; start.py does this automatically when no login is configured.
 """
 
+import base64
+import json
 import os
+import time
 
 import httpx
 import streamlit as st
@@ -46,13 +50,27 @@ def _error_detail(exc: Exception) -> str:
             detail = exc.response.json().get("detail", str(exc))
         except ValueError:
             detail = exc.response.text
-        if exc.response.status_code == 429:
-            # A usage limit: the detail is written for the user
+        if exc.response.status_code in (401, 429):
+            # Sign-in expired, or a usage limit: the detail is written for the user
             return detail
         return f"API error ({exc.response.status_code}): {detail}"
     if isinstance(exc, httpx.ConnectError):
         return "Could not connect to the API server."
     return f"Unexpected error: {exc}"
+
+
+def _token_expired(token: str, margin: int = 60) -> bool:
+    """Whether a JWT's exp claim has passed (or will within `margin` seconds).
+
+    Read without checking the signature: this only decides whether to ask the
+    user to sign in again. The API verifies the token properly.
+    """
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return claims["exp"] - margin < time.time()
+    except (IndexError, KeyError, TypeError, ValueError):
+        return True
 
 
 def _md(text: str) -> str:
@@ -125,20 +143,32 @@ if _auth_configured():
         )
         st.button("Sign in or create an account", on_click=st.login, type="primary")
         st.stop()
+    id_token = getattr(st.user, "tokens", {}).get("id")
+    if not id_token:
+        st.error('Login is missing `expose_tokens = "id"` in the [auth] section of '
+                 ".streamlit/secrets.toml, so the API can't verify who you are.")
+        st.stop()
+    if _token_expired(id_token):
+        # Cognito ID tokens last an hour; signing in again is one click while
+        # Cognito's own session lasts.
+        st.info("Your sign-in has expired.")
+        st.button("Sign in again", on_click=st.logout, type="primary")
+        st.stop()
     OWNER = st.user.get("sub")
     USER_LABEL = st.user.get("email", "Signed in")
+    # The API verifies this token and takes the user from it (auth.py)
+    HEADERS = {"Authorization": f"Bearer {id_token}"}
 elif os.getenv("AUTH_DISABLED") == "1":
     OWNER = "local"
     USER_LABEL = "Local mode (login disabled)"
+    # Local mode: the API trusts this header only when it runs with AUTH_DISABLED=1 too
+    HEADERS = {"X-User-Id": OWNER}
 else:
     st.error(
         "Login isn't configured. Add an [auth] section to .streamlit/secrets.toml, "
         "or set AUTH_DISABLED=1 to run as a single local user."
     )
     st.stop()
-
-# The API trusts this header; it is only reachable from this server.
-HEADERS = {"X-User-Id": OWNER}
 
 # Chat history belongs to one user: reset it if someone else signs in
 # in the same browser session.
