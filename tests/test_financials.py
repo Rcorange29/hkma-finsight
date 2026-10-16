@@ -576,3 +576,76 @@ def test_breakdown_pages_include_net_sales_by_country():
                  "2025 2024 2023\nU.S. $ 151,790 $ 142,196 $ 138,573\n"
                  "China (1)  64,377  66,952  72,559\n")
     assert list(financials.breakdown_pages({7: countries})) == [7]
+
+
+def test_the_row_labelled_exactly_as_asked_breaks_a_tie():
+    # J&J: both rows hold "Net earnings" and 26,804 for 2025, but differ in 2023
+    page = ("(In millions)\n"
+            "2025 2024 2023\n"
+            "Net earnings from continuing operations 26,804 14,066 13,326\n"
+            "Net earnings from discontinued operations, net of tax — — 21,827\n"
+            "Net earnings $ 26,804 14,066 35,153\n")
+    row = verify_row(page, "Net earnings", "26,804", 2025)
+    assert row is not None
+    assert row.values == [Decimal(26804), Decimal(14066), Decimal(35153)]
+
+
+def test_rows_that_tie_and_disagree_are_still_ambiguous():
+    # Neither row is labelled exactly "Net earnings", and they disagree on 2024
+    page = ("2025 2024\n"
+            "Net earnings from continuing operations 26,804 14,066\n"
+            "Net earnings attributable to shareholders 26,804 13,000\n")
+    assert verify_row(page, "Net earnings", "26,804", 2025) is None
+
+
+def _statement_page(heading):
+    figures = " ".join(f"{n},{n:03d}" for n in range(100, 115))
+    return f"{heading}\n(In millions)\n2025 2024\nRow {figures}\n"
+
+
+def test_statement_pages_keep_the_tightest_run_of_primary_statements():
+    pages = {
+        39: _statement_page("CONSOLIDATED STATEMENTS OF INCOME"),   # an MD&A table
+        62: _statement_page("CONSOLIDATED STATEMENTS OF INCOME"),
+        64: _statement_page("CONSOLIDATED BALANCE SHEETS"),
+        65: _statement_page("CONSOLIDATED STATEMENTS OF CASH FLOWS"),
+        78: _statement_page("CONSOLIDATED BALANCE SHEETS"),        # a note
+        # A note naming all three statements doesn't anchor the run
+        88: _statement_page("Statements of income, balance sheets and cash flows"),
+    }
+    assert list(financials.statement_pages(pages)) == [62, 64, 65]
+
+
+def test_statement_pages_without_all_three_keep_every_match():
+    pages = {10: _statement_page("CONSOLIDATED BALANCE SHEETS"),
+             12: _statement_page("CONSOLIDATED STATEMENTS OF INCOME")}
+    assert list(financials.statement_pages(pages)) == [10, 12]
+
+
+def test_items_the_first_pass_skipped_are_asked_for_again():
+    calls = []
+
+    def mapper(pages, only=None):
+        calls.append(only)
+        if only is None:        # the first pass leaves net income out
+            return [RowMapping(metric="revenue", page=66, label="Total revenue",
+                               value="245,122", fiscal_year=2024)]
+        return [RowMapping(metric="net_income", page=66, label="Net income",
+                           value="88,136", fiscal_year=2024)]
+
+    facts = extract_facts(PAGES, "msft.pdf", "public", mapper=mapper)
+    assert calls[0] is None
+    assert "revenue" not in calls[1] and "net_income" in calls[1]
+    assert len(calls) == 2                       # one second pass, not a loop
+    assert {f.metric for f in facts} == {"revenue", "net_income"}
+
+
+def test_mappers_without_only_get_a_single_pass():
+    calls = []
+
+    def mapper(pages):
+        calls.append(1)
+        return []
+
+    assert extract_facts(PAGES, "msft.pdf", "public", mapper=mapper) == []
+    assert calls == [1]

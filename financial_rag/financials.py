@@ -35,6 +35,7 @@ Usage:
 
 from __future__ import annotations
 
+import inspect
 import re
 import sqlite3
 import sys
@@ -100,7 +101,9 @@ LINE_ITEMS: dict[str, LineItem] = {
         LineItem("income_tax_expense", "Provision for income taxes", "income", "USD", False,
                  "Provision for (benefit from) income taxes / income tax expense."),
         LineItem("net_income", "Net income", "income", "USD", False,
-                 "Net income (loss) for the company, from the income statement."),
+                 "Net income (loss) attributable to the company's shareholders, after "
+                 "noncontrolling interests: the line some filings print below 'consolidated "
+                 "net income'. Also called net earnings."),
         LineItem("eps_basic", "Basic earnings per share", "income", "USD/share", False,
                  "Basic earnings (loss) per share."),
         LineItem("eps_diluted", "Diluted earnings per share", "income", "USD/share", False,
@@ -368,6 +371,12 @@ def verify_row(page_text: str, label: str, value_text: str, fiscal_year: int) ->
         return None
     top = max(score for score, _ in candidates)
     best = [row for score, row in candidates if score == top]
+    if len(best) > 1:
+        # "Net earnings" matches both "Net earnings" and "Net earnings from
+        # continuing operations" fully; the row labelled exactly as asked wins
+        exact = [row for row in best if same_words(label, row.label)]
+        if exact:
+            best = exact
     if any(row.values != best[0].values for row in best[1:]):
         return None     # equally good rows disagree: ambiguous
     return best[0]
@@ -398,17 +407,45 @@ def statement_pages(pages: dict[int, str]) -> dict[int, str]:
     A page qualifies when a statement heading appears in its first few lines
     (which excludes notes that merely mention "balance sheets") and it is dense
     with figures (which excludes the table of contents).
+
+    Notes and MD&A tables can still qualify (Coca-Cola's had five), and they
+    crowd the row mapping. The primary statements sit together, so when the
+    income statement, balance sheet and cash flow statement are all found, only
+    the tightest run of pages holding one of each is kept. Pages that match all
+    three headings at once (a note listing them) don't anchor that run.
     """
     chosen: dict[int, str] = {}
+    kinds: dict[int, set[str]] = {}
     for number in sorted(pages):
         text = pages[number]
         top = [ln for ln in text.splitlines() if ln.strip()][:_HEADING_LINES]
         heading = "\n".join(ln for ln in top if "comprehensive" not in ln.lower())
         if len(_GROUPED.findall(text)) < _MIN_FIGURES:
             continue
-        if any(rx.search(heading) for rx in _HEADINGS.values()):
+        found = {kind for kind, rx in _HEADINGS.items() if rx.search(heading)}
+        if found:
             chosen[number] = text
+            kinds[number] = found
+    window = _statement_window({n: k.pop() for n, k in kinds.items() if len(k) == 1})
+    if window:
+        low, high = window
+        chosen = {n: t for n, t in chosen.items() if low <= n <= high}
     return dict(list(chosen.items())[:MAX_STATEMENT_PAGES])
+
+
+def _statement_window(kind_of: dict[int, str]) -> tuple[int, int] | None:
+    """The shortest page range holding all three statements, earliest on a tie."""
+    best = None
+    numbers = sorted(kind_of)
+    for i, low in enumerate(numbers):
+        seen: set[str] = set()
+        for high in numbers[i:]:
+            seen.add(kind_of[high])
+            if len(seen) == len(_HEADINGS):
+                if best is None or high - low < best[1] - best[0]:
+                    best = (low, high)
+                break
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -448,11 +485,15 @@ Line items:
 """
 
 
-def _map_rows(pages: dict[int, str]) -> list[RowMapping]:
-    """Ask the model which row reports each line item. Its values are only hints."""
+def _map_rows(pages: dict[int, str], only: list[str] | None = None) -> list[RowMapping]:
+    """Ask the model which row reports each line item (or only those in `only`).
+
+    Its values are only hints, checked by verify_row.
+    """
     from langchain_openai import ChatOpenAI
 
-    items = "\n".join(f"- {item.key}: {item.hint}" for item in LINE_ITEMS.values())
+    items = "\n".join(f"- {item.key}: {item.hint}" for item in LINE_ITEMS.values()
+                      if only is None or item.key in only)
     text = "\n\n".join(f"=== Page {n} ===\n{t}" for n, t in pages.items())
     llm = ChatOpenAI(model=config.CHAT_MODEL, temperature=0).with_structured_output(RowMappings)
     result = llm.invoke(
@@ -470,6 +511,11 @@ def extract_facts(
     Mappings that fail verification are dropped. If two mappings for the same
     metric produce different values for a year, that metric is dropped entirely
     rather than picking one.
+
+    Asked for all 22 line items at once, the model sometimes leaves a few out
+    (Coca-Cola's capital expenditures in two runs of three). So a mapper that
+    takes `only` is asked a second time, for just the items still without a
+    verified figure; its answers are verified the same way.
     """
     statements = statement_pages(pages)
     if not statements:
@@ -479,7 +525,16 @@ def extract_facts(
     found: dict[tuple[str, int], Fact] = {}
     conflicted: set[str] = set()
     rejected = 0
-    for mapping in mapper(statements):
+    mappings = list(mapper(statements))
+    second_pass = "only" in inspect.signature(mapper).parameters
+    while mappings or second_pass:
+        if not mappings:
+            # First pass done: ask again for items still without a verified figure
+            second_pass = False
+            missing = [key for key in LINE_ITEMS if key not in {m for m, _ in found}]
+            mappings = list(mapper(statements, only=missing)) if missing else []
+            continue
+        mapping = mappings.pop(0)
         item = LINE_ITEMS.get(mapping.metric)
         text = statements.get(mapping.page)
         if item is None or text is None:
