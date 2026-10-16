@@ -26,12 +26,12 @@ year whose 10-K it closes (fiscal_year_labels).
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 
 from financial_rag import edgar
-from financial_rag.financials import LINE_ITEMS, Fact
+from financial_rag.financials import LINE_ITEMS, Fact, page_number, row_printing
 
 # Line item -> us-gaap tags that report it, most common first
 TAGS: dict[str, tuple[str, ...]] = {
@@ -160,10 +160,16 @@ class Report:
     mismatches: list[tuple[Fact, set[Decimal]]]
     cik: int | None = None
     skipped: str = ""           # why no check ran, if it didn't
+    reread: list[Fact] = field(default_factory=list)   # one figure per line item re-read
 
 
-def crosscheck(facts: list[Fact], company: str | None, cik: int | None = None) -> Report:
+def crosscheck(facts: list[Fact], company: str | None, cik: int | None = None,
+               pages: dict[int, str] | None = None) -> Report:
     """Mark figures XBRL confirms, and drop any it contradicts.
+
+    Given the statement pages, a contradicted line item is re-read from the one
+    row there that prints XBRL's values, if there is one (financials.row_printing);
+    that row's figures replace all the line item's others.
 
     Never raises for EDGAR trouble: without a contact address, a known company or
     a network, the figures are returned unchanged with the reason in `skipped`.
@@ -188,7 +194,18 @@ def crosscheck(facts: list[Fact], company: str | None, cik: int | None = None) -
                                                    labels=labels)))
             continue
         kept.append(replace(fact, xbrl=result) if result == MATCH else fact)
-    return Report(kept, counts, mismatches, cik)
+
+    reread: list[Fact] = []
+    years = {fact.fiscal_year for fact in facts}
+    for metric in dict.fromkeys(fact.metric for fact, _ in mismatches) if pages else ():
+        expected = {year: annual_values(facts_json, metric, year, labels=labels)
+                    for year in years}
+        first = next(fact for fact, _ in mismatches if fact.metric == metric)
+        rows = row_printing(pages, metric, expected, first.owner, first.source_file)
+        if rows:
+            kept = [f for f in kept if f.metric != metric or f.segment] + rows
+            reread.append(rows[0])
+    return Report(kept, counts, mismatches, cik, reread=reread)
 
 
 def summary(report: Report, source_file: str) -> str:
@@ -200,4 +217,7 @@ def summary(report: Report, source_file: str) -> str:
     for fact, reported in report.mismatches:
         shown = ", ".join(str(v) for v in sorted(reported))
         line += f"\n  dropped {fact.metric} FY{fact.fiscal_year}: read {fact.value}, XBRL {shown}"
+    for fact in report.reread:
+        line += (f"\n  re-read {fact.metric} from {fact.label!r} (p.{page_number(fact.page)}),"
+                 " the row printing XBRL's values")
     return line

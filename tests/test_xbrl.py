@@ -193,6 +193,79 @@ def test_extraction_stores_the_xbrl_result(sec, monkeypatch):
     assert (stored.metric, stored.xbrl) == ("revenue", "match")
 
 
+# Realty Income's income statement: "Net income" is before noncontrolling
+# interests; XBRL's NetIncomeLoss is the line attributable to the company. Income
+# taxes are printed as a deduction.
+REALTY_INCOME = """CONSOLIDATED STATEMENTS OF INCOME AND COMPREHENSIVE INCOME
+(in thousands, except per share amounts)
+Years ended December 31,
+2025 2024 2023
+Total revenue 5,749,377 5,271,142 4,078,993
+Income before income taxes 1,155,129 933,942 928,935
+Income taxes ( 85,346 ) ( 66,601 ) ( 52,021 )
+Net income 1,069,783 867,341 876,914
+Net income attributable to noncontrolling interests ( 11,193 ) ( 6,569 ) ( 4,605 )
+Net income attributable to the Company 1,058,590 860,772 872,309
+Net income available to common stockholders $ 1,058,590 $ 847,893 $ 872,309
+"""
+
+
+def _expected(*values):
+    return {year: {Decimal(v)} for year, v in zip((2025, 2024, 2023), values, strict=False)}
+
+
+def test_the_row_printing_xbrls_values_is_found():
+    rows = financials.row_printing({57: REALTY_INCOME}, "net_income",
+                                   _expected(1058590000, 860772000), "public", "o.htm")
+    assert [(f.fiscal_year, f.value, f.xbrl) for f in rows] == [
+        (2025, Decimal(1058590000), "match"), (2024, Decimal(860772000), "match"),
+        (2023, Decimal(872309000), "")]
+    assert rows[0].label == "Net income attributable to the Company"
+    assert rows[0].page == 57
+
+
+def test_a_deduction_takes_xbrls_sign():
+    rows = financials.row_printing({57: REALTY_INCOME}, "income_tax_expense",
+                                   _expected(85346000, 66601000, 52021000), "public", "o.htm")
+    assert [f.value for f in rows] == [Decimal(85346000), Decimal(66601000), Decimal(52021000)]
+
+
+def test_no_row_is_chosen_when_rows_with_different_values_print_xbrls():
+    # 2025 alone can't tell "attributable to the Company" from "available to common"
+    assert financials.row_printing({57: REALTY_INCOME}, "net_income",
+                                   {2025: {Decimal(1058590000)}}, "public", "o.htm") == []
+    assert financials.row_printing({57: REALTY_INCOME}, "net_income",
+                                   _expected(999), "public", "o.htm") == []
+
+
+def test_balance_sheet_columns_dated_a_year_later_are_read_as_named():
+    # Target's balance at January 31, 2026 closes the year it calls 2025
+    balance = ("(millions, except footnotes) January 31, 2026 February 1, 2025\n"
+               "Total assets $ 59,490 $ 57,769\n")
+    rows = financials.row_printing({47: balance}, "total_assets",
+                                   {2025: {Decimal(59490000000)}}, "public", "tgt.htm")
+    assert [(f.fiscal_year, f.value) for f in rows] == [
+        (2025, Decimal(59490000000)), (2024, Decimal(57769000000))]
+
+
+def test_crosscheck_rereads_a_contradicted_line_item(sec, monkeypatch):
+    realty = {"facts": {"us-gaap": {"NetIncomeLoss": _rows(
+        "USD", (dict(FY25, start="2025-01-01", end="2025-12-31"), 1058590000),
+        (dict(FY25, start="2024-01-01", end="2024-12-31"), 860772000))}}}
+    get = edgar._get
+    monkeypatch.setattr(edgar, "_get",
+                        lambda url, agent: realty if "companyfacts" in url else get(url, agent))
+    facts = [fact("net_income", year, v) for year, v in
+             ((2025, 1069783000), (2024, 867341000), (2023, 876914000))]
+    report = xbrl.crosscheck(facts, None, cik=726728, pages={57: REALTY_INCOME})
+    assert [(f.fiscal_year, f.value, f.label) for f in report.facts] == [
+        (2025, Decimal(1058590000), "Net income attributable to the Company"),
+        (2024, Decimal(860772000), "Net income attributable to the Company"),
+        (2023, Decimal(872309000), "Net income attributable to the Company")]
+    assert "re-read net_income from 'Net income attributable to the Company' (p.58)" in (
+        xbrl.summary(report, "o.htm"))
+
+
 def test_confirmed_inputs_say_so_in_their_citation():
     confirmed = fact("revenue", 2025, 416161000000)
     assert analysis.cite(confirmed) == "(apple.pdf, p.32)"
