@@ -21,6 +21,8 @@ chroma_db/
 
 # Source corpus — add your own 10-K PDFs to data/
 data/*.pdf
+data/*.htm
+data/*.html
 data/users/
 
 # Evaluation output

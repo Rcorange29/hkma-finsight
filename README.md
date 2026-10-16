@@ -113,11 +113,11 @@ Ask "What was the free cash flow margin in 2024 and how did it change from 2023?
 answer is computed, not generated:
 
 ```
-Free cash flow margin · microsoft-sec-10k.pdf
+Free cash flow margin · microsoft-sec-10k.htm
 - FY2023: 28.1% = (Net cash from operating activities − Capital expenditures) ÷ Total revenue, from:
-    - Net cash from operating activities ("Net cash from operations") FY2023: $87,582 million (microsoft-sec-10k.pdf, p.71)
-    - Capital expenditures ("Additions to property and equipment") FY2023: $28,107 million (microsoft-sec-10k.pdf, p.71)
-    - Total revenue FY2023: $211,915 million (microsoft-sec-10k.pdf, p.67)
+    - Net cash from operating activities ("Net cash from operations") FY2023: $87,582 million (microsoft-sec-10k.htm, p.59; matches SEC XBRL data)
+    - Capital expenditures ("Additions to property and equipment") FY2023: $28,107 million (microsoft-sec-10k.htm, p.59; matches SEC XBRL data)
+    - Total revenue FY2023: $211,915 million (microsoft-sec-10k.htm, p.56; matches SEC XBRL data)
 - FY2024: 30.2% = … (same inputs for FY2024)
 - Change FY2023 → FY2024: +2.2 percentage points
 ```
@@ -277,16 +277,18 @@ Jobs run one at a time on a worker thread (`jobs.py`), and their records are kep
 "running". You can also drop any `.htm`/`.html` filing in `data/`, and `python -m
 financial_rag.ingest` picks it up.
 
-**Results.** With the HTML 10-Ks as the samples instead of the PDFs, from the same
-filings:
+**Results.** The samples are now these HTML 10-Ks rather than PDFs of the same filings:
 - **Microsoft:** 59 statement figures, all 59 confirmed by XBRL; the PDF gave 56.
-- **Apple:** 59 of 59 confirmed. Its country breakdown, which the PDF run sometimes missed,
-  extracts.
-- **Benchmark:** 46/47 correct and 47/47 routed, verified and cited. The one miss was
-  correct: "dividends declared" was answered from Note 16's table total ($22,296 million),
-  which the benchmark now accepts alongside the MD&A's $22.3 billion and the equity
-  statement's 22,293. "Short-term unearned revenue", the question the PDF version missed
-  for want of its column headings, is answered.
+- **Apple:** 59 of 59 confirmed. Its country breakdown, which the PDF runs sometimes
+  missed, extracts, so "How much of Apple's revenue came from the United States?" is
+  calculated rather than read from text.
+- **Benchmark:** 47/47 correct, routed, verified and cited. In one of two runs the
+  Activision goodwill question was answered from the goodwill table's "Acquisitions"
+  column ($51,235 million, every FY2024 acquisition) rather than Note 8's $50,969 million.
+  "Short-term unearned revenue", the question the PDF version missed for want of its
+  column headings, is answered.
+- Citations point at the HTML filing's own page breaks, so page numbers differ from the
+  PDFs'.
 
 **A skipped part is completed, not guessed.** The model sometimes leaves out a small row
 when mapping a breakdown: Microsoft's "Other" product line, $45 million of $245 billion.
@@ -422,13 +424,16 @@ pip install -r requirements.txt
 cp .env.example .env               # then edit .env and set your real key
 ```
 
-Get a 10-K PDF. Filings are free from the SEC:
-[EDGAR full-text search](https://efts.sec.gov/LATEST/search-index?q=10-K) — pick a
-company, open its 10-K, and save the PDF. The examples below use Microsoft's, saved as
-`microsoft-sec-10k.pdf`. Either drop it into `data/` before booting, or upload it from
-the UI sidebar once the app is running. The benchmarks also use Apple's FY2025 10-K,
-saved as `apple-sec-10k.pdf`; Apple's investor site publishes it as a PDF
-([10K-Q4-2025-as-filed.pdf](https://s2.q4cdn.com/470004039/files/doc_earnings/2025/q4/filing/10K-Q4-2025-as-filed.pdf)).
+Get the sample filings: Microsoft's FY2024 and Apple's FY2025 10-Ks, as EDGAR serves them
+(HTML with inline XBRL). Set `SEC_USER_AGENT` in `.env` first (the SEC asks every
+automated request for a contact address), then:
+
+```bash
+python -m financial_rag.ingest --fetch-samples   # saves data/microsoft-sec-10k.htm and data/apple-sec-10k.htm, then ingests
+```
+
+The examples and benchmarks below use these two. Any other 10-K works too: fetch one
+by ticker from the UI sidebar, upload a PDF, or drop a PDF or `.htm` filing into `data/`.
 
 Then boot everything with one command:
 
@@ -436,7 +441,7 @@ Then boot everything with one command:
 python start.py                    # add --reingest to rebuild the vector store
 ```
 
-This verifies your `.env`, ingests any PDFs in `data/` if `chroma_db/` is missing, starts the API on
+This verifies your `.env`, ingests the filings in `data/` if `chroma_db/` is missing, starts the API on
 `:8000` and the UI on `:8501`, and opens the browser once both are ready. `Ctrl-C` stops
 both. Without login configured (next section) it runs in **local mode**: no sign-in, and
 everything belongs to a single "local" user.
@@ -444,8 +449,9 @@ everything belongs to a single "local" user.
 ### Sign-in and per-user data
 
 Each user signs in and sees only their own uploads, plus **sample filings** that every
-user can query. PDFs placed directly in `data/` are samples; uploads go to
-`data/users/<user-id>/` and are visible only to the user who uploaded them.
+user can query. Filings placed directly in `data/` are samples; uploads go to
+`data/users/<user-id>/` and are visible only to the user who uploaded them. A sample
+removed from `data/` is removed from the store the next time ingest runs.
 
 Login uses Streamlit's built-in OIDC support (`st.login`) with an
 [Amazon Cognito](https://aws.amazon.com/cognito/) user pool, whose hosted page handles
@@ -524,7 +530,8 @@ Requires Docker with the Compose plugin, and a `.env` file with your `OPENAI_API
 (the key reaches the containers via `env_file` and is never baked into the image).
 
 ```bash
-docker compose run --rm ingest     # one-off: embed data/*.pdf into the store
+docker compose run --rm api python -m financial_rag.ingest --fetch-samples   # samples, once
+docker compose run --rm ingest     # later re-ingests: embed the filings in data/
 docker compose up                  # app on http://localhost via the Caddy proxy
 ```
 
@@ -580,12 +587,12 @@ input figure, and `sources` holds one citation per input row:
 
 ```json
 {
-  "answer": "**Current ratio** · microsoft-sec-10k.pdf\n- **FY2024: 1.27x** = Total current assets ÷ Total current liabilities, from: …",
+  "answer": "**Current ratio** · microsoft-sec-10k.htm\n- **FY2024: 1.27x** = Total current assets ÷ Total current liabilities, from: …",
   "route": "calculation",
   "calculations": [
     {
       "metric": "current_ratio", "name": "Current ratio",
-      "source_file": "microsoft-sec-10k.pdf", "fiscal_year": 2024,
+      "source_file": "microsoft-sec-10k.htm", "fiscal_year": 2024,
       "value": "1.274954903181520680682598215", "display": "1.27x",
       "formula": "Total current assets ÷ Total current liabilities", "problem": null,
       "inputs": [
@@ -593,18 +600,18 @@ input figure, and `sources` holds one citation per input row:
           "metric": "total_current_assets", "name": "Total current assets",
           "fiscal_year": 2024, "value": "159734000000", "unit": "USD",
           "display": "$159,734 million", "label": "Total current assets",
-          "source_file": "microsoft-sec-10k.pdf", "page": 69,
-          "line": "Total current assets   159,734    184,257", "shared": true
+          "source_file": "microsoft-sec-10k.htm", "page": 58,
+          "line": "Total current assets 159,734 184,257", "shared": true
         },
         { "metric": "total_current_liabilities", "…": "…" }
       ]
     }
   ],
   "sources": [
-    { "source_file": "microsoft-sec-10k.pdf", "page": 69,
-      "excerpt": "Total current assets   159,734    184,257" },
-    { "source_file": "microsoft-sec-10k.pdf", "page": 69,
-      "excerpt": "Total current liabilities   125,286    104,149" }
+    { "source_file": "microsoft-sec-10k.htm", "page": 58,
+      "excerpt": "Total current assets 159,734 184,257" },
+    { "source_file": "microsoft-sec-10k.htm", "page": 58,
+      "excerpt": "Total current liabilities 125,286 104,149" }
   ]
 }
 ```

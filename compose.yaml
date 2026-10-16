@@ -1,10 +1,10 @@
 # Financial Report Q&A Engine
 #
-#   docker compose run --rm ingest   # one-off: embed data/*.pdf into the store
+#   docker compose run --rm ingest   # one-off: embed the filings in data/ into the store
 #   docker compose up                # app on http://localhost (via Caddy)
 #
 # PDFs uploaded through the UI are saved to ./data/users/<id>/ and indexed on
-# the spot; PDFs placed directly in ./data are public samples every user sees.
+# the spot; filings placed directly in ./data are public samples every user sees.
 #
 # Caddy is the only service reachable from outside the host. Set SITE_ADDRESS
 # in .env to a public hostname (e.g. 3-106-84-6.sslip.io) and Caddy obtains an

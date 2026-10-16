@@ -20,10 +20,18 @@ Chunking strategy:
   - HTML filings: a chunk holding a table's rows but not its column headings
     gets the headings repeated at its top, so "57,582 50,901" says which year.
 
+A public sample removed from data/ is removed from the store too, chunks and
+figures, when ingest next runs.
+
+The samples are Microsoft's FY2024 and Apple's FY2025 10-Ks as EDGAR serves them
+(SAMPLES), the filings eval_answers.py's questions were checked against.
+
 Usage:
-    python -m financial_rag.ingest
+    python -m financial_rag.ingest                    # (re)ingest everything in data/
+    python -m financial_rag.ingest --fetch-samples    # download the samples first
 """
 
+import argparse
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +54,14 @@ CHROMA_DIR = Path("chroma_db")
 COLLECTION_NAME = "financial_reports"
 
 FILING_SUFFIXES = (".pdf", ".htm", ".html")
+
+# The public samples, saved under data/ by --fetch-samples
+SAMPLES = {
+    "microsoft-sec-10k.htm":
+        "https://www.sec.gov/Archives/edgar/data/789019/000095017024087843/msft-20240630.htm",
+    "apple-sec-10k.htm":
+        "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm",
+}
 
 CHUNK_SIZE = 1024    # tokens
 CHUNK_OVERLAP = 128  # tokens
@@ -343,16 +359,57 @@ def filing_jobs() -> list[tuple[Path, str]]:
     return jobs
 
 
-def main():
+def fetch_samples() -> None:
+    """Download any sample filing data/ doesn't have yet (needs SEC_USER_AGENT)."""
+    from financial_rag import edgar  # local import: only this command talks to EDGAR
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for name, url in SAMPLES.items():
+        path = DATA_DIR / name
+        if not path.exists():
+            print(f"Downloading {name} from {url} …")
+            path.write_text(edgar.fetch_document(url), encoding="utf-8")
+
+
+def remove_file(name: str, owner: str) -> int:
+    """Remove one ingested file's chunks and figures; returns the chunks removed."""
+    vectorstore = open_vectorstore()
+    ids = vectorstore.get(
+        where={"$and": [{"source_file": name}, {"owner": owner}]}, include=[]
+    )["ids"]
+    if ids:
+        vectorstore.delete(ids=ids)
+    financials.replace_facts(owner, name, [])
+    return len(ids)
+
+
+def prune_samples() -> list[str]:
+    """Remove public samples no longer in data/ from the store; returns their names."""
+    on_disk = {p.name for p in _filings_in(DATA_DIR)}
+    gone = [name for name in list_documents(PUBLIC_OWNER) if name not in on_disk]
+    for name in gone:
+        print(f"Removing {remove_file(name, PUBLIC_OWNER)} chunks of {name}: "
+              f"no longer in {DATA_DIR}/.")
+    return gone
+
+
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description="Ingest the filings in data/.")
+    parser.add_argument("--fetch-samples", action="store_true",
+                        help="download the sample 10-Ks from SEC EDGAR first")
+    args = parser.parse_args(argv)
+    if args.fetch_samples:
+        fetch_samples()
     if not DATA_DIR.exists():
         DATA_DIR.mkdir(parents=True)
-        print(f"Created {DATA_DIR.resolve()} — place your 10-K PDF files there and re-run.")
+        print(f"Created {DATA_DIR.resolve()} — place your 10-K filings there and re-run.")
         return
 
     # Rebuilding the store from scratch restores everything with its access.
     jobs = filing_jobs()
     if not jobs:
         raise FileNotFoundError(f"No filings found in {DATA_DIR.resolve()}")
+    prune_samples()
     for pdf_path, owner in jobs:
         ingest_file(pdf_path, owner)
     print(f"Vectorstore persisted to {CHROMA_DIR.resolve()}")
