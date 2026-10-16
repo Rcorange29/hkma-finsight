@@ -72,6 +72,16 @@ def test_gross_margin_falls_back_to_revenue_minus_cost():
     assert r.formula == "(Total revenue − Cost of revenue) ÷ Total revenue"
 
 
+def test_a_banks_efficiency_ratio():
+    # JPMorgan FY2025: total noninterest expense 95,640 of total net revenue 182,447
+    jpm = [Fact("public", "jpm.htm", metric, 2025, Decimal(millions) * M, "USD",
+                LINE_ITEMS[metric].name, 166, "")
+           for metric, millions in (("noninterest_expense", 95640), ("revenue", 182447))]
+    r = compute(METRICS["efficiency_ratio"], index_facts(jpm)["jpm.htm"], "jpm.htm", 2025)
+    assert format_value(r.value, "percent") == "52.4%"
+    assert r.formula == "Noninterest expense ÷ Total revenue"
+
+
 def test_free_cash_flow_subtracts_capex():
     assert _one("free_cash_flow", 2024).value == (Decimal(118548) - Decimal(44477)) * M
 

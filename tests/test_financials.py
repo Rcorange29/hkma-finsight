@@ -396,6 +396,12 @@ def test_every_line_item_says_how_its_row_is_printed():
         ("dividends_paid", "Cash distributions to common stockholders"),   # Realty Income
         ("share_repurchases", "Purchases of stock for treasury"),          # Coca-Cola
         ("share_repurchases", "Common stock repurchased"),                 # Microsoft
+        # JPMorgan's bank line items
+        ("net_interest_income", "Net interest income"),
+        ("noninterest_income", "Noninterest revenue"),
+        ("provision_for_credit_losses", "Provision for credit losses"),
+        ("provision_for_credit_losses", "Provision for loan losses"),
+        ("noninterest_expense", "Total noninterest expense"),
     ],
 )
 def test_printed_labels_that_fit_the_line_item(metric, label):
@@ -419,6 +425,10 @@ def test_printed_labels_that_fit_the_line_item(metric, label):
         ("total_equity", "Total liabilities and shareholders' equity"),
         ("capital_expenditures", "Purchases of investments: Fixed maturities"),  # Travelers
         ("capital_expenditures", "Purchases"),                       # JPMorgan
+        ("net_interest_income", "Interest income"),
+        ("net_interest_income", "Total net revenue"),
+        ("noninterest_expense", "Compensation expense"),
+        ("provision_for_credit_losses", "Provision for income taxes"),
     ],
 )
 def test_printed_labels_that_do_not(metric, label):

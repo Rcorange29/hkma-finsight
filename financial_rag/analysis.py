@@ -97,6 +97,8 @@ _DERIVED = [
            "Net income relative to year-end total assets."),
     _ratio("payout_ratio", "Dividend payout ratio", "dividends_paid", "net_income", "percent",
            "Cash dividends paid as a share of net income."),
+    _ratio("efficiency_ratio", "Efficiency ratio", "noninterest_expense", "revenue", "percent",
+           "Banks: noninterest expense as a share of total net revenue (lower is better)."),
 ]
 
 _BREAKDOWN_METRICS = [
