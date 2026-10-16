@@ -41,3 +41,6 @@ sentence_transformers/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Personal Claude Code settings (permission rules for this machine)
+.claude/settings.local.json
