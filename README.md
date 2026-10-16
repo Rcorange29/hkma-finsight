@@ -86,6 +86,7 @@ relative paths.
 | --- | --- |
 | `ingest.py` | Loads filings (PDF, or EDGAR's HTML 10-K) from `data/`, chunks them (1024 tokens / 128 overlap, table-aware), embeds and persists to ChromaDB. |
 | `html_filing.py` | Reads EDGAR's HTML 10-K: pages at the filing's page breaks, one line per table row, and each table's column headings. |
+| `jobs.py` | Background jobs (fetching and indexing a filing by ticker): one worker thread, state kept in SQLite, `GET /jobs/{id}` for progress. |
 | `financials.py` | Extracts the income statement, balance sheet and cash flow statement into verified, cited figures; stores them in SQLite. |
 | `analysis.py` | Deterministic calculations (margins, ratios, returns, growth, YoY, CAGR) over those figures, and the cited write-up. |
 | `router.py` | Plans each question, narrows it to the filing it names, and sends it to the analysis engine or to text retrieval. |
@@ -94,7 +95,7 @@ relative paths.
 | `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
 | `eval_retrieval.py` | Retrieval benchmark: three pipeline configurations on 72 questions, scored on whether the right passage is retrieved. |
 | `eval_answers.py` | End-to-end benchmark: 47 questions on two companies' filings through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
-| `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `GET /documents`, `GET /financials`, `GET /usage`, `GET /health`. |
+| `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `POST /filings` (fetch by ticker), `GET /jobs/{id}`, `GET /documents`, `GET /financials`, `GET /usage`, `GET /health`. |
 | `usage.py` | Usage limits: questions and uploads per user per month, questions per minute, and a daily cap across all users. |
 | `edgar.py` | SEC EDGAR client: ticker and company lookup, filings, XBRL company facts; identified, rate-limited and cached. |
 | `xbrl.py` | Checks each extracted figure against the company's XBRL data: matches are marked, contradictions dropped. |
@@ -258,8 +259,22 @@ text loses: which cells form a row, and which heading sits over which column.
   2023]`. A PDF chunk that starts mid-balance-sheet can't say which column is 2024; this
   one can.
 
-Ingest any `.htm`/`.html` filing as you would a PDF: drop it in `data/`, and `python -m
-financial_rag.ingest` picks it up. Fetching by ticker comes next.
+**Fetch by ticker.** In the sidebar, enter a ticker under "Or fetch a company's latest 10-K"
+(or `POST /filings {"ticker": "AAPL"}`). The API looks the ticker up on EDGAR straight away:
+an unknown ticker gets `404` and nothing is counted. Then it queues a job and answers `202`
+with the job's id. The job:
+1. finds the company's latest 10-K;
+2. downloads it;
+3. indexes it like an upload, into your own filings, as `aapl-10k-2025-09-27.htm`;
+4. checks its figures against the company's XBRL data, using the CIK from the ticker.
+
+The UI follows `GET /jobs/{id}` and shows each step until it reports the filing's chunks and
+figures. A fetch counts against the monthly upload limit and is refunded if it fails.
+
+Jobs run one at a time on a worker thread (`jobs.py`), and their records are kept in
+`chroma_db/jobs.sqlite3`. A job interrupted by a server restart is marked failed, never left
+"running". You can also drop any `.htm`/`.html` filing in `data/`, and `python -m
+financial_rag.ingest` picks it up.
 
 **Results.** With the HTML 10-Ks as the samples instead of the PDFs, from the same
 filings:
@@ -635,6 +650,14 @@ page (`null` if none was found):
 `GET /financials` (optional `?source_file=`) lists those figures, each with its value,
 fiscal year, page and the row as printed: `{"figures": [{"metric": "revenue", …}]}`.
 
+`POST /filings` with `{"ticker": "AAPL"}` fetches the company's latest 10-K from SEC EDGAR
+as a background job: `202` with `{"job_id": …, "state": "queued", …}`. It answers `404` for
+an unknown ticker, `422` for a malformed one, `429` over the upload limit, and `503` when
+EDGAR can't be reached or `SEC_USER_AGENT` isn't set. `GET /jobs/{job_id}` reports progress:
+`state` is queued, running, done or failed, `step` says what a running job is doing,
+`error` says why a job failed, and `document` describes the filing once it's done. A job
+is only visible to the user who started it.
+
 `GET /usage` returns the caller's counts for this month and the limits they count
 against (`0` = unlimited), with the date the counts reset:
 `{"questions": 12, "question_limit": 50, "uploads": 1, "upload_limit": 3, "resets": "2026-11-01"}`.
@@ -878,6 +901,10 @@ pytest
 
 Tests cover:
 - the chunking logic and prompt formatting;
+- fetching by ticker: the job's steps and result, the file saved under the user's folder,
+  refunds and error messages for failures, unknown and malformed tickers, class-share
+  tickers, EDGAR outages, the upload limit, jobs private to their owner, one job at a
+  time, and jobs a restart interrupted;
 - EDGAR HTML filings: page breaks, hidden XBRL headers, inline tags inside sentences, rows
   read as statement rows, column headings repeated in chunks that lost them, and HTML
   files found and ingested next to PDFs;

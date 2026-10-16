@@ -120,6 +120,46 @@ def _usage_line(counts: dict) -> str:
             + part("Uploads", counts["uploads"], counts["upload_limit"]) + " this month")
 
 
+FETCH_TIMEOUT = 15 * 60     # seconds: a long 10-K can take several minutes to index
+
+
+def _fetch_filing(ticker: str) -> None:
+    """Ask the API to fetch a 10-K by ticker, then follow the job until it ends."""
+    try:
+        response = httpx.post(f"{API_BASE_URL}/filings", json={"ticker": ticker},
+                              headers=HEADERS, timeout=30.0)
+        response.raise_for_status()
+        job = response.json()
+    except Exception as exc:
+        st.error(f"{ticker}: {_error_detail(exc)}")
+        return
+    with st.status(f"Fetching {job['subject']}'s latest 10-K …", expanded=True) as status:
+        shown = ""
+        deadline = time.time() + FETCH_TIMEOUT
+        while job["state"] not in ("done", "failed") and time.time() < deadline:
+            if job.get("step") and job["step"] != shown:
+                shown = job["step"]
+                status.write(shown)
+            time.sleep(2)
+            try:
+                response = httpx.get(f"{API_BASE_URL}/jobs/{job['job_id']}",
+                                     headers=HEADERS, timeout=10.0)
+                response.raise_for_status()
+                job = response.json()
+            except Exception as exc:
+                status.update(label=f"{ticker}: {_error_detail(exc)}", state="error")
+                return
+        if job["state"] == "done":
+            doc = job["document"]
+            status.update(label=f"Indexed {doc['source_file']} ({_doc_line(doc)})",
+                          state="complete", expanded=False)
+        elif job["state"] == "failed":
+            status.update(label=f"{job['subject']}: {job['error']}", state="error")
+        else:
+            status.update(label=f"{job['subject']} is still being indexed; it will appear "
+                                "under your filings when it's done.", state="running")
+
+
 def _render_sources(sources: list[dict], expanded: bool) -> None:
     with st.expander("Source citations", expanded=expanded):
         for src in sources:
@@ -204,6 +244,13 @@ with st.sidebar:
                     st.success(f"Indexed {info['source_file']} ({_doc_stats(info)})")
                 except Exception as exc:
                     st.error(f"{upload.name}: {_error_detail(exc)}")
+
+    with st.form("fetch", clear_on_submit=True):
+        ticker = st.text_input("Or fetch a company's latest 10-K", placeholder="Ticker, e.g. AAPL",
+                               max_chars=12)
+        fetch = st.form_submit_button("Fetch from SEC EDGAR")
+    if fetch and ticker.strip():
+        _fetch_filing(ticker.strip())
 
     try:
         response = httpx.get(f"{API_BASE_URL}/documents", headers=HEADERS, timeout=10.0)

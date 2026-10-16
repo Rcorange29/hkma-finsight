@@ -1,6 +1,6 @@
 import pytest
 
-from financial_rag import edgar, financials, ingest, rag, usage
+from financial_rag import edgar, financials, ingest, jobs, rag, usage
 
 
 @pytest.fixture(autouse=True)
@@ -17,8 +17,24 @@ def no_edgar(tmp_path, monkeypatch):
     def offline(url, agent):
         raise edgar.EdgarUnavailable(f"tests are offline: {url}")
 
+    def no_documents(url):
+        raise edgar.EdgarUnavailable(f"tests are offline: {url}")
+
     monkeypatch.setattr(edgar, "_get", offline)
+    monkeypatch.setattr(edgar, "fetch_document", no_documents)
     monkeypatch.setattr(edgar, "CACHE_DIR", tmp_path / "edgar_cache")
+
+
+@pytest.fixture(autouse=True)
+def isolated_jobs_db(tmp_path, monkeypatch):
+    """Each test has its own job records, and its jobs finish before it ends.
+
+    A job still queued at teardown would otherwise run during a later test, with
+    that test's fakes, or none (it once fetched a real filing that way).
+    """
+    monkeypatch.setattr(jobs, "JOBS_DB", tmp_path / "jobs" / "jobs.sqlite3")
+    yield
+    jobs._executor.submit(lambda: None).result(timeout=30)
 
 
 @pytest.fixture(autouse=True)
