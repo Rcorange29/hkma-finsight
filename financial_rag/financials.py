@@ -178,6 +178,7 @@ class Fact:
     page: int
     line: str           # the row as printed: the citation excerpt
     segment: str = ""   # for breakdowns: the part ("Intelligent Cloud"); "" for totals
+    xbrl: str = ""      # "match" when the SEC's XBRL data reports the same value
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +681,7 @@ CREATE TABLE IF NOT EXISTS figures (
     page INTEGER NOT NULL,
     line TEXT NOT NULL,
     segment TEXT NOT NULL DEFAULT '',
+    xbrl TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (owner, source_file, metric, segment, fiscal_year)
 )
 """
@@ -696,8 +698,13 @@ def _connect() -> sqlite3.Connection:
     ).fetchone()
     if legacy:
         with conn:
-            conn.execute("INSERT OR IGNORE INTO figures SELECT *, '' FROM facts")
+            conn.execute("INSERT OR IGNORE INTO figures SELECT *, '', '' FROM facts")
             conn.execute("DROP TABLE facts")
+    # Databases from before the XBRL check lack its column
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(figures)")}
+    if "xbrl" not in columns:
+        with conn:
+            conn.execute("ALTER TABLE figures ADD COLUMN xbrl TEXT NOT NULL DEFAULT ''")
     return conn
 
 
@@ -708,10 +715,11 @@ def replace_facts(owner: str, source_file: str, facts: list[Fact]) -> None:
             "DELETE FROM figures WHERE owner = ? AND source_file = ?", (owner, source_file)
         )
         conn.executemany(
-            "INSERT INTO figures VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO figures (owner, source_file, metric, fiscal_year, value, unit, "
+            "label, page, line, segment, xbrl) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (f.owner, f.source_file, f.metric, f.fiscal_year, str(f.value), f.unit,
-                 f.label, f.page, f.line, f.segment)
+                 f.label, f.page, f.line, f.segment, f.xbrl)
                 for f in facts
             ],
         )
@@ -722,7 +730,10 @@ def load_facts(owners: list[str], source_file: str | None = None) -> list[Fact]:
     """Facts belonging to any of `owners`, optionally for one file."""
     if not FACTS_DB.exists() or not owners:
         return []
-    query = f"SELECT * FROM figures WHERE owner IN ({','.join('?' * len(owners))})"
+    query = (
+        "SELECT owner, source_file, metric, fiscal_year, value, unit, label, page, line, "
+        f"segment, xbrl FROM figures WHERE owner IN ({','.join('?' * len(owners))})"
+    )
     params: list = list(owners)
     if source_file is not None:
         query += " AND source_file = ?"
@@ -733,8 +744,8 @@ def load_facts(owners: list[str], source_file: str | None = None) -> list[Fact]:
         ).fetchall()
     conn.close()
     return [
-        Fact(owner, source, metric, year, Decimal(value), unit, label, page, line, segment)
-        for owner, source, metric, year, value, unit, label, page, line, segment in rows
+        Fact(owner, source, metric, year, Decimal(value), unit, label, page, line, segment, xbrl)
+        for owner, source, metric, year, value, unit, label, page, line, segment, xbrl in rows
     ]
 
 
@@ -751,11 +762,15 @@ def count_facts(owner: str) -> dict[str, int]:
     return dict(rows)
 
 
-def extract_and_store(pages: dict[int, str], source_file: str, owner: str) -> int:
+def extract_and_store(
+    pages: dict[int, str], source_file: str, owner: str, company: str | None = None
+) -> int:
     """Re-extract one file's figures, replacing any stored before. Returns the count.
 
     Old figures are cleared even if extraction fails, so a replaced filing never
-    keeps the previous version's numbers.
+    keeps the previous version's numbers. When `company` (the registrant on the
+    cover page) is an SEC filer, the figures are checked against its XBRL data:
+    confirmed ones are marked, contradicted ones dropped (see xbrl.py).
     """
     replace_facts(owner, source_file, [])
     facts = extract_facts(pages, source_file, owner)
@@ -765,6 +780,12 @@ def extract_and_store(pages: dict[int, str], source_file: str, owner: str) -> in
         except Exception as exc:
             # Breakdowns are an extra: the statement figures still stand
             print(f"Warning: breakdown extraction failed for {source_file}: {exc}")
+    if facts:
+        from financial_rag import xbrl  # local import: xbrl imports this module
+
+        report = xbrl.crosscheck(facts, company)
+        print(xbrl.summary(report, source_file))
+        facts = report.facts
     replace_facts(owner, source_file, facts)
     return len(facts)
 
@@ -791,7 +812,8 @@ def main(argv: list[str]) -> None:
     from financial_rag import ingest  # local import: ingest imports this module
 
     for pdf_path, owner in ingest.pdf_jobs():
-        extract_and_store(load_pages(pdf_path), pdf_path.name, owner)
+        pages = load_pages(pdf_path)
+        extract_and_store(pages, pdf_path.name, owner, ingest.registrant_name(pages.get(0, "")))
 
 
 if __name__ == "__main__":

@@ -197,7 +197,7 @@ def ingest_file(pdf_path: Path, owner: str = PUBLIC_OWNER, max_pages: int | None
     # Figures are an extra: if extraction fails, text Q&A still works, and the
     # analysis engine reports the figures as missing rather than guessing.
     try:
-        financials.extract_and_store(pages, pdf_path.name, owner)
+        financials.extract_and_store(pages, pdf_path.name, owner, company)
     except Exception as exc:
         print(f"Warning: financial figure extraction failed for {pdf_path.name}: {exc}")
     return len(chunks)
