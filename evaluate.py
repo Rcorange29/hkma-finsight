@@ -7,8 +7,15 @@ Metrics evaluated:
 
 Prints a before/after comparison table when a previous evaluation_results.json exists.
 
-Usage:
+Optional: eval_answers.py is the main benchmark. RAGAs only judges text answers,
+and it scores a correct "not found in context" as unfaithful. Its packages are
+not in requirements.txt; install them first (Python 3.12 or older):
+
+    pip install -r requirements-ragas.txt
     python evaluate.py
+
+EVAL_QUESTIONS is also used by eval_retrieval.py, which needs none of this, so
+the RAGAs imports are inside the functions that use them.
 """
 
 from __future__ import annotations
@@ -16,14 +23,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from datasets import Dataset
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from ragas import evaluate
-from ragas.embeddings import LangchainEmbeddingsWrapper
-from ragas.llms import LangchainLLMWrapper
-from ragas.metrics import answer_relevancy, faithfulness
 
+import config
 import rag
 
 load_dotenv()
@@ -159,7 +162,9 @@ EVAL_QUESTIONS: list[dict] = [
 RESULTS_PATH = Path("evaluation_results.json")
 
 
-def build_eval_dataset(questions: list[dict]) -> Dataset:
+def build_eval_dataset(questions: list[dict]):
+    from datasets import Dataset
+
     rows = {
         "user_input": [],
         "response": [],
@@ -225,6 +230,14 @@ def _comparison_table(before: dict, after_df) -> None:
 
 
 def main():
+    try:
+        from ragas import evaluate
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from ragas.llms import LangchainLLMWrapper
+        from ragas.metrics import answer_relevancy, faithfulness
+    except ImportError:
+        raise SystemExit("RAGAs isn't installed: pip install -r requirements-ragas.txt") from None
+
     # Snapshot existing results as "before" baseline
     before_data = None
     if RESULTS_PATH.exists():
@@ -232,8 +245,8 @@ def main():
             before_data = json.load(f)
         print(f"Loaded before-scores from {RESULTS_PATH}")
 
-    llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4o-mini", temperature=0))
-    embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings(model="text-embedding-3-small"))
+    llm = LangchainLLMWrapper(ChatOpenAI(model=config.CHAT_MODEL, temperature=0))
+    embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings(model=config.EMBEDDING_MODEL))
 
     print("\nBuilding evaluation dataset …")
     dataset = build_eval_dataset(EVAL_QUESTIONS)

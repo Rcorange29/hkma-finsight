@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-REWRITE_MODEL = "gpt-4o-mini"
+import config
+
 MAX_TURNS = 6           # most recent messages used (3 questions and their answers)
 MAX_CHARS = 1500        # per message; long calculation answers are cut
 
@@ -54,7 +55,7 @@ def standalone_question(question: str, history: list[tuple[str, str]]) -> str:
         return question
     from langchain_openai import ChatOpenAI
 
-    llm = ChatOpenAI(model=REWRITE_MODEL, temperature=0, timeout=20, max_retries=1)
+    llm = ChatOpenAI(model=config.CHAT_MODEL, temperature=0, timeout=20, max_retries=1)
     try:
         result = llm.with_structured_output(_Rewritten).invoke([
             ("system", REWRITE_PROMPT),

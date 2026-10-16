@@ -46,10 +46,11 @@ from typing import Literal
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
+import config
+
 load_dotenv()
 
 FACTS_DB = Path("chroma_db") / "financials.sqlite3"
-EXTRACTION_MODEL = "gpt-4o-mini"
 MAX_STATEMENT_PAGES = 8
 
 
@@ -452,7 +453,7 @@ def _map_rows(pages: dict[int, str]) -> list[RowMapping]:
 
     items = "\n".join(f"- {item.key}: {item.hint}" for item in LINE_ITEMS.values())
     text = "\n\n".join(f"=== Page {n} ===\n{t}" for n, t in pages.items())
-    llm = ChatOpenAI(model=EXTRACTION_MODEL, temperature=0).with_structured_output(RowMappings)
+    llm = ChatOpenAI(model=config.CHAT_MODEL, temperature=0).with_structured_output(RowMappings)
     result = llm.invoke(
         [("system", _MAPPING_PROMPT.format(items=items)), ("human", text)]
     )
@@ -604,7 +605,7 @@ def _map_parts(pages: dict[int, str]) -> list[PartMapping]:
         f"- {b.key}: {ITEM_NAMES[b.total].lower()} by {b.dimension}" for b in BREAKDOWNS.values()
     )
     text = "\n\n".join(f"=== Page {n} ===\n{t}" for n, t in pages.items())
-    llm = ChatOpenAI(model=EXTRACTION_MODEL, temperature=0).with_structured_output(PartMappings)
+    llm = ChatOpenAI(model=config.CHAT_MODEL, temperature=0).with_structured_output(PartMappings)
     return llm.invoke(
         [("system", _BREAKDOWN_PROMPT.format(breakdowns=breakdowns)), ("human", text)]
     ).rows

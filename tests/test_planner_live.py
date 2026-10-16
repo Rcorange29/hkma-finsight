@@ -4,7 +4,7 @@
 
 The planner is the one model-dependent step between a question and the
 deterministic engine, so this pins its behaviour on representative questions.
-Re-run it after changing PLANNER_PROMPT or PLANNER_MODEL.
+Re-run it after changing PLANNER_PROMPT or config.CHAT_MODEL.
 """
 
 import os

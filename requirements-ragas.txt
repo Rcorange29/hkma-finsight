@@ -1,0 +1,4 @@
+# Optional: only evaluate.py (the RAGAs judge) needs these. Python 3.12 or older.
+-r requirements.txt
+ragas>=0.2.15
+datasets>=3.5.0

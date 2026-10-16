@@ -20,10 +20,10 @@ RUN pip install -r requirements.txt
 
 # Bake the reranker into the image: no Hugging Face download on first query,
 # and at runtime the container needs network access only to OpenAI.
-# Keep the model name in sync with RERANKER_MODEL in rag.py.
+# Keep the model name in sync with RERANKER_MODEL in config.py.
 RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
-COPY api.py app.py ingest.py rag.py hybrid.py financials.py analysis.py router.py followup.py usage.py evaluate.py eval_retrieval.py eval_answers.py ./
+COPY config.py api.py app.py ingest.py rag.py hybrid.py financials.py analysis.py router.py followup.py usage.py evaluate.py eval_retrieval.py eval_answers.py ./
 
 # Run as a non-root user. /app/chroma_db is the volume mount point and must
 # exist with the right owner before the volume is attached.
