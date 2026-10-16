@@ -42,3 +42,9 @@ def test_format_docs_uses_the_same_provenance_line_as_the_evaluation():
     """The eval passes doc_to_context(doc); the prompt must contain that verbatim."""
     doc = _doc()
     assert doc_to_context(doc) in _format_docs([doc])
+
+
+def test_context_names_the_company_when_known():
+    doc = Document(page_content="body", metadata={
+        "source_file": "acme.pdf", "page": 2, "company": "Acme Holdings, Inc."})
+    assert doc_to_context(doc) == "Source: acme.pdf (Acme Holdings, Inc.), Page: 2\nbody"

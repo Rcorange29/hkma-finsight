@@ -82,7 +82,7 @@ def test_requests_without_a_valid_user_id_are_rejected(client, header):
 def test_query_is_scoped_to_the_caller(client, monkeypatch):
     seen = {}
 
-    def fake_query(question, owner):
+    def fake_query(question, owner, filing=None):
         seen["owner"] = owner
         return rag.RAGResponse(answer="ok")
 
@@ -110,7 +110,7 @@ def test_upload_ingests_under_the_original_name_into_the_users_dir(
 
     assert resp.status_code == 201
     assert resp.json() == {"source_file": "acme-10k.pdf", "chunks": 42, "figures": 0,
-                           "shared": False}
+                           "shared": False, "company": None}
     # The name ingest sees is the one citations will show
     assert seen == {"name": "acme-10k.pdf", "owner": ALICE, "bytes": PDF_BYTES}
     user_dir = data_dir / "users" / ALICE
@@ -164,14 +164,20 @@ def test_failed_ingestion_leaves_nothing_behind(client, data_dir, monkeypatch):
     assert list((data_dir / "users" / ALICE).iterdir()) == []
 
 
-def test_list_documents_shows_own_files_and_shared_samples(client, monkeypatch):
-    stores = {ALICE: {"mine.pdf": 3}, BOB: {"bobs.pdf": 9}, "public": {"msft.pdf": 7}}
-    monkeypatch.setattr(ingest, "list_documents", lambda owner: stores.get(owner, {}))
+def test_list_documents_shows_own_files_and_shared_samples(client, store, tmp_path, monkeypatch):
+    _fake_pdf(monkeypatch, ["Commission File Number 001-37845\nMICROSOFT CORPORATION\nWASHINGTON",
+                            "Total revenue 245,122"])
+    ingest.ingest_file(tmp_path / "msft.pdf", ingest.PUBLIC_OWNER)
+    _fake_pdf(monkeypatch, ["no cover page here", "page two", "page three"])
+    ingest.ingest_file(tmp_path / "mine.pdf", ALICE)
+    ingest.ingest_file(tmp_path / "bobs.pdf", BOB)
     resp = client.get("/documents", headers={"X-User-Id": ALICE})
     assert resp.json() == {
         "documents": [
-            {"source_file": "mine.pdf", "chunks": 3, "figures": 0, "shared": False},
-            {"source_file": "msft.pdf", "chunks": 7, "figures": 0, "shared": True},
+            {"source_file": "mine.pdf", "chunks": 3, "figures": 0, "shared": False,
+             "company": None},
+            {"source_file": "msft.pdf", "chunks": 2, "figures": 0, "shared": True,
+             "company": "Microsoft Corporation"},
         ]
     }
 
@@ -329,3 +335,39 @@ def test_main_ingests_public_samples_and_each_users_uploads(
     ingest.main()
 
     assert calls == [("sample.pdf", ingest.PUBLIC_OWNER), ("mine.pdf", ALICE)]
+
+
+@pytest.mark.filterwarnings("ignore:Relevance scores must be between 0 and 1")
+def test_a_filing_scope_searches_that_filing_only(keyword_only, tmp_path, monkeypatch):
+    monkeypatch.setattr(rag, "SCORE_THRESHOLD", float("-inf"))   # semantic path on too
+    _fake_pdf(monkeypatch, ["Total revenue 245,122"])
+    ingest.ingest_file(tmp_path / "msft.pdf", ingest.PUBLIC_OWNER)
+    ingest.ingest_file(tmp_path / "acme.pdf", ALICE)
+    ingest.ingest_file(tmp_path / "other.pdf", ALICE)
+    vectorstore = ingest.open_vectorstore()
+
+    found = rag.retrieve_and_rerank("total revenue", vectorstore, ALICE,
+                                    filing=(ALICE, "acme.pdf"))
+    assert {(d.metadata["owner"], d.metadata["source_file"]) for d in found} == {
+        (ALICE, "acme.pdf")}
+    assert {tuple(d.metadata["retrieval"]["matched_by"]) for d in found} == {
+        ("semantic", "keyword")}
+    # The same names unscoped still reach every visible filing
+    found = rag.retrieve_and_rerank("total revenue", vectorstore, ALICE)
+    assert {d.metadata["source_file"] for d in found} == {"msft.pdf", "acme.pdf", "other.pdf"}
+
+
+def test_a_scope_cannot_reach_another_users_filing():
+    with pytest.raises(ValueError, match="another user"):
+        rag.Scope(ALICE, (BOB, "bobs.pdf"))
+    assert rag.Scope(ALICE, (ingest.PUBLIC_OWNER, "msft.pdf")).where() == {
+        "$and": [{"owner": ingest.PUBLIC_OWNER}, {"source_file": "msft.pdf"}]}
+
+
+def test_company_is_read_from_the_cover_page_at_ingest(store, tmp_path, monkeypatch):
+    _fake_pdf(monkeypatch, ["ACME HOLDINGS, INC.\n(Exact name of registrant as specified in "
+                            "its charter)", "Revenue 10"])
+    ingest.ingest_file(tmp_path / "acme.pdf", ALICE)
+    metas = ingest.open_vectorstore().get(include=["metadatas"])["metadatas"]
+    assert {m["company"] for m in metas} == {"Acme Holdings, Inc."}
+    assert ingest.filings([ALICE]) == [ingest.Filing("acme.pdf", ALICE, 2, "Acme Holdings, Inc.")]

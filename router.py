@@ -13,13 +13,15 @@ answer text are produced by code, so the model never writes a figure.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import analysis
 import financials
+import ingest
 import rag
 from ingest import PUBLIC_OWNER
 
@@ -33,7 +35,16 @@ class QuestionPlan(BaseModel):
     metrics: list[MetricKey]
     fiscal_years: list[int]
     year_over_year: bool
-    source_file: str | None
+    # Copied from the question, not chosen from the filing list: matching it to a
+    # filing is done in code (match_filing), which the model was unreliable at.
+    company: str | None = Field(
+        description="The company the question names, as written in the question, or the "
+                    "company behind a product it names. null if it names neither."
+    )
+
+
+class UnknownFiling(Exception):
+    """The caller asked about a filing they can't see (or that doesn't exist)."""
 
 
 @dataclass
@@ -42,6 +53,7 @@ class Answer:
     sources: list[dict]
     route: str                                   # calculation | text
     series: list[analysis.Series] = field(default_factory=list)
+    filing: str | None = None                    # the one filing searched, if narrowed
 
 
 PLANNER_PROMPT = """You route questions about company financial filings.
@@ -61,10 +73,13 @@ For "calculation":
 every year in it. Never add a year just to compare with: set year_over_year instead.
 - year_over_year: true if the question asks about growth, change, an increase or decrease, \
 or a comparison with the prior year.
-- source_file: the filing the question is about, from the list below, or null if the \
-question doesn't single one out.
 
-For "text": metrics and fiscal_years empty, year_over_year false, source_file null.
+For both routes:
+- company: the company the question names, copied as written ("Microsoft's" -> \
+"Microsoft"), or the company behind a product it names ("Azure" -> "Microsoft"). null \
+when the question names no company or product. Never fill it in from the list of filings.
+
+For "text": metrics and fiscal_years empty, year_over_year false.
 
 Examples:
 - "What is the current ratio?" -> calculation, [current_ratio], [], false
@@ -75,29 +90,58 @@ Examples:
 - "Gross and net margin for fiscal 2023" -> calculation, [gross_margin, net_margin], [2023], false
 - "Why did operating margin improve?" -> text
 - "How fast did the cloud segment grow?" -> text (segment revenue is not in the list)
+- "What risks does Acme describe?" -> text, company "Acme"
+- "What was Microsoft's net margin?" -> calculation, [net_margin], company "Microsoft"
+- "What was revenue?" -> calculation, [revenue], company null
 
 Metrics:
 {metrics}
-
-Filings with extracted figures:
-{documents}
 """
 
 
-def _describe_documents(facts: list[financials.Fact], owner: str) -> dict[str, str]:
-    years: dict[str, set[int]] = {}
-    shared: dict[str, bool] = {}
-    for f in facts:
-        years.setdefault(f.source_file, set()).add(f.fiscal_year)
-        shared[f.source_file] = f.owner != owner
-    return {
-        name: f"- {name}{' (sample filing)' if shared[name] else ''}: "
-              f"fiscal years {min(ys)}-{max(ys)}"
-        for name, ys in years.items()
-    }
+def visible_filings(owner: str) -> dict[str, ingest.Filing]:
+    """The caller's filings plus the samples, by file name. As with figures, a
+    user's own file shadows a sample of the same name."""
+    out: dict[str, ingest.Filing] = {}
+    for f in ingest.filings([owner, PUBLIC_OWNER]):
+        if f.source_file not in out or f.owner == owner:
+            out[f.source_file] = f
+    return out
 
 
-def plan_question(question: str, documents: dict[str, str]) -> QuestionPlan:
+# Words that don't tell one company's filing from another's
+_GENERIC_NAME_WORDS = frozenset(
+    "inc incorporated corp corporation co company companies holdings holding group ltd "
+    "limited plc llc lp sa ag nv the and of sec form annual report filing pdf 10k".split()
+)
+
+
+def _name_words(text: str) -> set[str]:
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return {w for w in words if len(w) > 1 and w not in _GENERIC_NAME_WORDS}
+
+
+def match_filing(company: str | None, filings: dict[str, ingest.Filing]) -> str | None:
+    """
+    The one filing whose company or file name shares a distinctive word with the
+    company the question names ("Microsoft's" matches "Microsoft Corporation" and
+    microsoft-sec-10k.pdf). None when nothing matches or several filings do.
+    """
+    wanted = _name_words(company or "")
+    if not wanted:
+        return None
+    hits = [
+        name for name, filing in filings.items()
+        if wanted & (_name_words(filing.company or "") | _name_words(name.rsplit(".", 1)[0]))
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
+def plan_question(question: str) -> QuestionPlan:
+    """
+    Read a question into a plan. The model isn't shown the user's filings: given
+    a list, it tended to fill in a company the question never named.
+    """
     from langchain_openai import ChatOpenAI
 
     metrics = "\n".join(
@@ -105,14 +149,18 @@ def plan_question(question: str, documents: dict[str, str]) -> QuestionPlan:
     )
     llm = ChatOpenAI(model=PLANNER_MODEL, temperature=0).with_structured_output(QuestionPlan)
     return llm.invoke([
-        ("system", PLANNER_PROMPT.format(metrics=metrics, documents="\n".join(documents.values()))),
+        ("system", PLANNER_PROMPT.format(metrics=metrics)),
         ("human", question),
     ])
 
 
-def _text_answer(question: str, owner: str, preface: str = "") -> Answer:
-    result = rag.query(question, owner)
-    return Answer(preface + result.answer, result.sources, "text")
+def _text_answer(
+    question: str, owner: str, filing: ingest.Filing | None = None, preface: str = ""
+) -> Answer:
+    scope = (filing.owner, filing.source_file) if filing else None
+    result = rag.query(question, owner, scope)
+    return Answer(preface + result.answer, result.sources, "text",
+                  filing=filing.source_file if filing else None)
 
 
 def visible_facts(owner: str) -> list[financials.Fact]:
@@ -123,22 +171,36 @@ def visible_facts(owner: str) -> list[financials.Fact]:
     return [f for f in facts if f.owner == owner or f.source_file not in own_files]
 
 
-def answer(question: str, owner: str, planner=plan_question) -> Answer:
+def answer(
+    question: str, owner: str, source_file: str | None = None, planner=plan_question
+) -> Answer:
+    """
+    Answer from the caller's filings and the samples.
+
+    `source_file` (picked in the UI) narrows both routes to that one filing.
+    Otherwise the planner narrows them when the question names a company or
+    filing; a question that names none searches every filing, and the prompt
+    makes the model say which filing each figure comes from.
+    """
+    filings = visible_filings(owner)
+    if source_file is not None and source_file not in filings:
+        raise UnknownFiling(f"No filing named {source_file}.")
     facts = visible_facts(owner)
-    if not facts:
-        return _text_answer(question, owner)
 
-    documents = _describe_documents(facts, owner)
-    try:
-        plan = planner(question, documents)
-    except Exception as exc:
-        print(f"Planner failed, answering from text: {exc}")
-        return _text_answer(question, owner)
-    if plan.route != "calculation" or not plan.metrics:
-        return _text_answer(question, owner)
+    plan = None
+    if facts or (source_file is None and len(filings) > 1):
+        try:
+            plan = planner(question)
+        except Exception as exc:
+            print(f"Planner failed, answering from text: {exc}")
 
-    if plan.source_file in documents:
-        facts = [f for f in facts if f.source_file == plan.source_file]
+    chosen = source_file or (match_filing(plan.company, filings) if plan else None)
+    filing = filings[chosen] if chosen else None
+    if filing:
+        facts = [f for f in facts if f.source_file == filing.source_file]
+    if plan is None or plan.route != "calculation" or not plan.metrics or not facts:
+        return _text_answer(question, owner, filing)
+
     metrics = list(dict.fromkeys(plan.metrics))     # dedupe, keep order
     series = analysis.analyze(facts, metrics, plan.fiscal_years, plan.year_over_year)
 
@@ -153,7 +215,8 @@ def answer(question: str, owner: str, planner=plan_question) -> Answer:
             + (":\n" + "\n".join(f"- {p}" for p in problems) if problems else ".")
             + "\n\nFrom the filing text instead:\n\n"
         )
-        return _text_answer(question, owner, preface)
+        return _text_answer(question, owner, filing, preface)
 
     markdown, sources = analysis.render(series)
-    return Answer(markdown, sources, "calculation", series)
+    return Answer(markdown, sources, "calculation", series,
+                  filing=filing.source_file if filing else None)
