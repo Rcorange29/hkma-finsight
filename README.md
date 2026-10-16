@@ -88,6 +88,7 @@ carries a visible "Not verified against the excerpts" warning naming each proble
 | `rag.py` | Hybrid retrieval, score-threshold filtering, cross-encoder reranking, prompting. Exposes `query()`. |
 | `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
 | `eval_retrieval.py` | Retrieval benchmark: three pipeline configurations on 72 questions, scored on whether the right passage is retrieved. |
+| `eval_answers.py` | End-to-end benchmark: 27 questions through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
 | `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `GET /documents`, `GET /financials`, `GET /health`. |
 | `app.py` | Streamlit chat UI with expandable source citations and a sidebar for uploading PDFs. |
 | `evaluate.py` | RAGAs evaluation (faithfulness, answer relevancy) with a before/after comparison table. |
@@ -152,10 +153,20 @@ metric, the engine computes and code writes the answer from a template. Otherwis
 nothing in the plan can be computed (with the reason stated first), the question goes to
 text retrieval. "Why did operating margin improve?" and segment questions ("How fast did
 Azure grow?") go to retrieval: they're explanations or figures outside the statements.
+
+The planner also copies any **qualifier** out of the question: a segment or product
+("Intelligent Cloud revenue"), a geography, a quarter, an adjusted measure, or a different
+version of an item ("dividends *declared*", when the engine has dividends *paid*). Code
+sends any qualified question to text retrieval, because the engine only holds company-wide
+annual figures. Before this, the end-to-end evaluation caught "Intelligent Cloud revenue",
+"LinkedIn revenue" and "dividends declared" being answered with total revenue and
+dividends paid, each under the "nothing is estimated" footer.
+
 Routing is the one model-dependent step, so it has its own opt-in test
-(`tests/test_planner_live.py`). It routed 20 of 20 representative questions correctly in
-three consecutive runs, and still does now that it also extracts the company a question
-names (28 of 28 cases including those, three runs in a row).
+(`tests/test_planner_live.py`). It passes 41 of 41 cases, three runs in a row:
+- the 20 routing questions;
+- 11 on which filing a question is about;
+- 10 on qualifiers.
 
 Figures are stored in `chroma_db/financials.sqlite3`, scoped by owner exactly like the
 text chunks: users see their own filings' figures and the shared samples', never another
@@ -509,6 +520,60 @@ The only required environment variable is `OPENAI_API_KEY`, read from `.env`.
 ---
 
 ## Evaluation
+
+Three evaluations, each answering a different question:
+
+| Script | Measures | Cost per run |
+| --- | --- | --- |
+| `eval_answers.py` | Whether final answers are right, end to end, across every route | ~$0.03 |
+| `eval_retrieval.py` | Whether search puts the right passage in front of the model | ~$0.15 |
+| `evaluate.py` | RAGAs faithfulness and relevancy of text answers, judged by an LLM | 28 answers plus RAGAs judge calls (not measured) |
+
+### End-to-end answers
+
+```bash
+python eval_answers.py
+```
+
+Runs 27 questions through `router.answer` exactly as the API does: follow-up rewriting,
+planning, filing choice, calculation or retrieval, reranking and the answer check. It
+scores the final answers against figures checked by hand in Microsoft's FY2024 10-K:
+- **correct:** every expected figure is in the answer, and nothing that mustn't be;
+- **route:** the expected engine answered;
+- **verified:** no "Not verified" warning;
+- **cited:** the answer cites a page.
+
+The groups:
+- 10 calculations;
+- 11 text lookups, including segments and a "dividends declared" trap;
+- 4 follow-ups with conversation history;
+- 2 that should be refused: Apple's revenue, and Microsoft's FY2030 revenue.
+
+It also reports latency, gpt-4o-mini tokens and an estimated cost per question.
+
+| | Correct | Route | Verified | Cited |
+| --- | --- | --- | --- | --- |
+| First run | 22/27 | 24/27 | 27/27 | 27/27 |
+| After the fixes below (two runs) | **27/27** | **27/27** | **27/27** | **27/27** |
+
+What the first run caught, all answered confidently as calculations:
+- "Intelligent Cloud revenue", "LinkedIn revenue" and the follow-up "And Dynamics?" were
+  answered with total revenue. This is fixed by [qualifiers](#financial-analysis-engine).
+- "Dividends declared" was answered with dividends paid. Also fixed by qualifiers.
+- "Apple's revenue" was answered with Microsoft's revenue. Now a named company with no
+  filing gets "No filing for Apple is available…", the filings that are, and `"route":
+  "none"`.
+
+Fixing the third one at first broke "goodwill from the Activision Blizzard acquisition",
+which was refused because Activision Blizzard is a company too. The planner now extracts
+only the company whose own filing is asked about, not acquisitions, competitors or
+customers it mentions.
+
+Per question, the median is 6.9 seconds and about 16,000 input tokens, and the mean cost
+is about $0.001. Most input tokens are cached by OpenAI, which is why the cost is lower
+than the token count suggests.
+
+### Answer faithfulness (RAGAs)
 
 ```bash
 python evaluate.py

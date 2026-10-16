@@ -120,7 +120,7 @@ class Calculation(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     sources: list[SourceCitation]
-    route: str = "text"     # "calculation" or "text"
+    route: str = "text"     # "calculation", "text", or "none" (no filing to answer from)
     calculations: list[Calculation] = []
     filing: str | None = None   # the one filing the answer was drawn from, if narrowed
     question: str = ""          # the question as answered: a follow-up made standalone

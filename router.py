@@ -39,8 +39,17 @@ class QuestionPlan(BaseModel):
     # Copied from the question, not chosen from the filing list: matching it to a
     # filing is done in code (match_filing), which the model was unreliable at.
     company: str | None = Field(
-        description="The company the question names, as written in the question, or the "
-                    "company behind a product it names. null if it names neither."
+        description="The company whose own filing the question asks about, as the question "
+                    "names it (or via its product or ticker); not an acquisition, competitor, "
+                    "customer or partner it merely mentions. null if it doesn't name one."
+    )
+    # Also copied, not decided: any qualifier sends the question to text retrieval,
+    # because the engine only holds company-wide annual figures. Left to the model,
+    # "Intelligent Cloud revenue" was answered with total revenue.
+    qualifier: str | None = Field(
+        description="Anything in the question that narrows or changes what a listed metric "
+                    "measures: a segment, product, geography, quarter, adjusted or non-GAAP "
+                    "measure, or a different version of the item. null if none."
     )
 
 
@@ -52,7 +61,7 @@ class UnknownFiling(Exception):
 class Answer:
     answer: str
     sources: list[dict]
-    route: str                                   # calculation | text
+    route: str                                   # calculation | text | none
     series: list[analysis.Series] = field(default_factory=list)
     filing: str | None = None                    # the one filing searched, if narrowed
     question: str = ""                           # as answered: follow-ups made standalone
@@ -77,9 +86,18 @@ every year in it. Never add a year just to compare with: set year_over_year inst
 or a comparison with the prior year.
 
 For both routes:
-- company: the company the question names, copied as written ("Microsoft's" -> \
-"Microsoft"), or the company behind a product it names ("Azure" -> "Microsoft"). null \
-when the question names no company or product. Never fill it in from the list of filings.
+- company: the company whose own filing the question asks about, when the question names \
+it ("Microsoft's" -> "Microsoft") or names its product or ticker ("Azure" -> "Microsoft", \
+"MSFT" -> "Microsoft"). Not a company that is only mentioned as an acquisition, \
+competitor, customer, supplier or partner of the company being asked about. null when \
+the question doesn't name the company it asks about.
+- qualifier: anything in the question that narrows or changes what a listed metric \
+measures, copied from the question: a segment or product ("Intelligent Cloud", \
+"LinkedIn"), a geography ("United States"), a quarter ("Q4"), an adjusted or non-GAAP \
+measure ("adjusted operating income"), or a different version of the item ("dividends \
+declared", when the list has dividends paid). null when the question asks for a listed \
+company-wide annual metric as it is, in its own words or the list's. A company name or a \
+fiscal year is not a qualifier.
 
 For "text": metrics and fiscal_years empty, year_over_year false.
 
@@ -95,6 +113,13 @@ Examples:
 - "What risks does Acme describe?" -> text, company "Acme"
 - "What was Microsoft's net margin?" -> calculation, [net_margin], company "Microsoft"
 - "What was revenue?" -> calculation, [revenue], company null
+- "How much goodwill came from the Activision Blizzard acquisition?" -> text, company null \
+(Activision Blizzard is what was acquired, not the company asked about)
+- "How does Microsoft compete with Google?" -> text, company "Microsoft"
+- "What was Intelligent Cloud revenue in 2024?" -> qualifier "Intelligent Cloud"
+- "What were dividends declared in fiscal 2024?" -> qualifier "declared"
+- "What were dividends paid in fiscal 2024?" -> qualifier null (that is the listed metric)
+- "What was the operating margin in fiscal 2024?" -> qualifier null
 
 Metrics:
 {metrics}
@@ -123,20 +148,38 @@ def _name_words(text: str) -> set[str]:
     return {w for w in words if len(w) > 1 and w not in _GENERIC_NAME_WORDS}
 
 
-def match_filing(company: str | None, filings: dict[str, ingest.Filing]) -> str | None:
+def filings_named(company: str | None, filings: dict[str, ingest.Filing]) -> list[str]:
     """
-    The one filing whose company or file name shares a distinctive word with the
+    The filings whose company or file name shares a distinctive word with the
     company the question names ("Microsoft's" matches "Microsoft Corporation" and
-    microsoft-sec-10k.pdf). None when nothing matches or several filings do.
+    microsoft-sec-10k.pdf). Empty when the question names no company, or one
+    with no filing here.
     """
     wanted = _name_words(company or "")
     if not wanted:
-        return None
-    hits = [
+        return []
+    return [
         name for name, filing in filings.items()
         if wanted & (_name_words(filing.company or "") | _name_words(name.rsplit(".", 1)[0]))
     ]
+
+
+def match_filing(company: str | None, filings: dict[str, ingest.Filing]) -> str | None:
+    """The one filing the named company matches; None for no match or several."""
+    hits = filings_named(company, filings)
     return hits[0] if len(hits) == 1 else None
+
+
+def _no_filing_for(company: str, filings: dict[str, ingest.Filing]) -> Answer:
+    available = "; ".join(
+        f"{f.company} ({name})" if f.company else name for name, f in filings.items()
+    )
+    return Answer(
+        f"No filing for {company} is available, so I can't answer that from a filing. "
+        f"Filings you can ask about: {available or 'none yet'}. Upload {company}'s 10-K "
+        "to ask about it.",
+        [], "none",
+    )
 
 
 def plan_question(question: str) -> QuestionPlan:
@@ -212,11 +255,20 @@ def _answer(question: str, owner: str, source_file: str | None, planner) -> Answ
         except Exception as exc:
             print(f"Planner failed, answering from text: {exc}")
 
-    chosen = source_file or (match_filing(plan.company, filings) if plan else None)
+    chosen = source_file
+    if chosen is None and plan and plan.company:
+        named = filings_named(plan.company, filings)
+        if not named:
+            # Answering with another company's figures would be wrong, not partial
+            return _no_filing_for(plan.company, filings)
+        chosen = named[0] if len(named) == 1 else None
     filing = filings[chosen] if chosen else None
     if filing:
         facts = [f for f in facts if f.source_file == filing.source_file]
-    if plan is None or plan.route != "calculation" or not plan.metrics or not facts:
+    if (plan is None or plan.route != "calculation" or not plan.metrics or not facts
+            or plan.qualifier):
+        # A qualifier (a segment, a quarter, "declared" vs paid, ...) means the
+        # company-wide annual figures in the engine aren't what was asked for
         return _text_answer(question, owner, filing)
 
     metrics = list(dict.fromkeys(plan.metrics))     # dedupe, keep order
