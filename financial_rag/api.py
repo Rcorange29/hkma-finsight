@@ -139,6 +139,7 @@ class QueryResponse(BaseModel):
     route: str = "text"     # "calculation", "text", or "none" (no filing to answer from)
     calculations: list[Calculation] = []
     filing: str | None = None   # the one filing the answer was drawn from, if narrowed
+    filings: list[str] = []     # every filing it was drawn from, if narrowed (comparisons)
     question: str = ""          # the question as answered: a follow-up made standalone
 
 
@@ -253,6 +254,7 @@ def query_endpoint(request: QueryRequest, owner: str = Depends(current_owner)):
         route=result.route,
         calculations=calculations,
         filing=result.filing,
+        filings=result.filings,
         question=result.question or request.question,
     )
 

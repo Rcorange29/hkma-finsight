@@ -31,7 +31,7 @@ MSFT = {("revenue", 2024): 245122, ("revenue", 2023): 211915,
         ("operating_income", 2024): 109433, ("operating_income", 2023): 88523}
 
 
-COMPANIES = {"msft.pdf": "Microsoft Corporation", "acme.pdf": "Acme Inc.",
+COMPANIES = {"msft.pdf": "Microsoft Corporation", "acme.pdf": "Acme Inc.", "apple.pdf": "Apple Inc.",
              "secret.pdf": "Secret Corp"}
 
 
@@ -57,8 +57,8 @@ def text_only(monkeypatch):
 def text_calls(monkeypatch):
     calls = []
 
-    def fake_query(question, owner, filing=None):
-        calls.append((question, owner, filing))
+    def fake_query(question, owner, filing=None, filings=None):
+        calls.append((question, owner, filings or filing))
         return rag.RAGResponse(answer="from text", sources=[
             {"source_file": "msft.pdf", "page": 12, "excerpt": "prose"}])
 
@@ -67,9 +67,10 @@ def text_calls(monkeypatch):
 
 
 def _plan(route="calculation", metrics=("operating_margin",), years=(), yoy=False, company=None,
-          qualifier=None):
+          qualifier=None, companies=()):
     plan = QuestionPlan(route=route, metrics=list(metrics), fiscal_years=list(years),
-                        year_over_year=yoy, company=company, qualifier=qualifier)
+                        year_over_year=yoy, qualifier=qualifier,
+                        companies=list(companies) or ([company] if company else []))
     return lambda question: plan
 
 
@@ -441,15 +442,81 @@ def test_a_qualified_metric_is_answered_from_text(text_calls, qualifier):
     assert text_calls == [("Intelligent Cloud revenue?", "alice", None)]
 
 
-def test_a_named_company_matching_several_filings_searches_them_all(text_calls, monkeypatch):
+def test_a_named_company_matching_several_filings_searches_each_of_them(text_calls, monkeypatch):
     monkeypatch.setattr(ingest, "filings", lambda owners: [
         Filing("msft-2023.pdf", "alice", 1, "Microsoft Corporation"),
         Filing("msft-2024.pdf", "alice", 1, "Microsoft Corporation"),
+        Filing("acme.pdf", "alice", 1, "Acme Inc."),
     ])
     result = router.answer("Microsoft's risks?", "alice",
                            planner=_plan(route="text", metrics=(), company="Microsoft"))
     assert (result.route, result.filing) == ("text", None)
-    assert text_calls[-1][2] is None
+    assert result.filings == ["msft-2023.pdf", "msft-2024.pdf"]
+    # Not Acme's
+    assert text_calls[-1][2] == [("alice", "msft-2023.pdf"), ("alice", "msft-2024.pdf")]
+
+
+# ---------------------------------------------------------------------------
+# Comparisons: several companies named
+# ---------------------------------------------------------------------------
+
+APPLE = {("revenue", 2025): 416161, ("operating_income", 2025): 133050}
+
+
+def test_a_comparison_calculates_each_named_company(text_calls):
+    _store(PUBLIC_OWNER, "msft.pdf", MSFT)
+    _store(PUBLIC_OWNER, "apple.pdf", APPLE)
+    _store("alice", "acme.pdf", {("revenue", 2024): 10, ("operating_income", 2024): 1})
+    result = router.answer("Compare Apple's and Microsoft's operating margins", "alice",
+                           planner=_plan(companies=["Apple", "Microsoft"]))
+    assert result.route == "calculation"
+    assert sorted(s.source_file for s in result.series) == ["apple.pdf", "msft.pdf"]
+    assert result.filings == ["apple.pdf", "msft.pdf"] and result.filing is None
+    # Highest first, each at its latest year: their fiscal years differ
+    assert result.answer.startswith(
+        "**Compared · Operating margin:** Microsoft Corporation 44.6% (FY2024) · "
+        "Apple Inc. 32.0% (FY2025) _(each company's latest fiscal year)_")
+
+
+def test_a_comparison_in_a_shared_year_compares_that_year(text_calls):
+    _store(PUBLIC_OWNER, "msft.pdf", MSFT)
+    _store("alice", "acme.pdf", {("revenue", 2024): 300000, ("revenue", 2023): 1})
+    result = router.answer("Acme vs Microsoft revenue in 2024", "alice",
+                           planner=_plan(metrics=["revenue"], years=[2024],
+                                         companies=["Acme", "Microsoft"]))
+    assert result.answer.startswith(
+        "**Compared · Total revenue:** Acme Inc. $300,000 million (FY2024) · "
+        "Microsoft Corporation $245,122 million (FY2024)\n")
+
+
+def test_a_company_without_a_filing_is_named_and_the_rest_answered(text_calls):
+    _store(PUBLIC_OWNER, "msft.pdf", MSFT)
+    result = router.answer("Microsoft vs Tesla operating margin", "alice",
+                           planner=_plan(companies=["Microsoft", "Tesla"]))
+    assert result.route == "calculation"
+    assert result.answer.startswith("_No filing for Tesla is available, so this covers only "
+                                    "the other companies named._")
+    assert "**FY2024: 44.6%**" in result.answer
+    # None of them: the usual refusal, naming both
+    result = router.answer("Tesla vs Rivian", "alice",
+                           planner=_plan(companies=["Tesla", "Rivian"]))
+    assert result.route == "none"
+    assert result.answer.startswith("No filing for Tesla or Rivian is available")
+
+
+def test_a_text_comparison_searches_each_named_filing(text_calls):
+    _store(PUBLIC_OWNER, "msft.pdf", MSFT)
+    _store("alice", "acme.pdf", {("revenue", 2024): 10})
+    _store("bob", "secret.pdf", {("revenue", 2024): 99})
+    result = router.answer("How do Acme's and Microsoft's risks differ?", "alice",
+                           planner=_plan(route="text", metrics=(),
+                                         companies=["Acme", "Microsoft"]))
+    assert result.filings == ["acme.pdf", "msft.pdf"]
+    assert text_calls[-1][2] == [("alice", "acme.pdf"), (PUBLIC_OWNER, "msft.pdf")]
+
+
+def test_each_compared_filing_gets_its_share_of_retrieval():
+    assert [rag.per_filing_k(n) for n in (1, 2, 3, 5)] == [6, 3, 2, 2]
 
 
 

@@ -355,9 +355,49 @@ FOOTER = (
 )
 
 
-def render(series: list[Series]) -> tuple[str, list[dict]]:
-    """Markdown answer plus one source citation per input row used."""
+def comparisons(series: list[Series], names: dict[str, str] | None = None) -> list[str]:
+    """
+    One line per metric that several filings answer, highest value first:
+    "**Compared · Operating margin:** Microsoft Corporation 44.6% (FY2024) · Apple
+    Inc. 32.0% (FY2025)". `names` maps a file to its company.
+
+    The latest year every filing has is compared; with none in common, each
+    filing's latest, and the line says so: fiscal years end on different dates.
+    """
+    names = names or {}
+    groups: dict[tuple[str, str], list[Series]] = {}
+    for s in series:
+        groups.setdefault((s.metric.key, s.part), []).append(s)
+    lines = []
+    for group in groups.values():
+        valued = {s.source_file: {r.fiscal_year: r for r in s.results if r.value is not None}
+                  for s in group}
+        valued = {source: by_year for source, by_year in valued.items() if by_year}
+        if len(valued) < 2:
+            continue
+        common = set.intersection(*(set(by_year) for by_year in valued.values()))
+        picks = [(source, by_year[max(common or by_year)]) for source, by_year in valued.items()]
+        picks.sort(key=lambda pick: pick[1].value, reverse=True)
+        metric, part = group[0].metric, group[0].part
+        title = f"{metric.name}: {part}" if part else metric.name
+        shown = " · ".join(
+            f"{names.get(source, source)} {format_value(r.value, metric.unit)} (FY{r.fiscal_year})"
+            for source, r in picks
+        )
+        lines.append(f"**Compared · {title}:** {shown}"
+                     + ("" if common else " _(each company's latest fiscal year)_"))
+    return lines
+
+
+def render(series: list[Series], names: dict[str, str] | None = None) -> tuple[str, list[dict]]:
+    """
+    Markdown answer plus one source citation per input row used. When several
+    filings answer the same metric, a comparison line leads (see comparisons).
+    """
     blocks: list[str] = []
+    compared = comparisons(series, names)
+    if compared:
+        blocks.append("\n".join(compared))
     sources: dict[tuple[str, int, str], dict] = {}
     for s in series:
         title = f"{s.metric.name}: {s.part}" if s.part else s.metric.name

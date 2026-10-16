@@ -331,7 +331,8 @@ if question := st.chat_input("Ask a question about the financial reports …"):
                 data = response.json()
                 answer = data["answer"]
                 sources = data.get("sources", [])
-                filing = data.get("filing")
+                # "a.htm" or, for a comparison, "a.htm and b.htm"
+                filing = data.get("filing") or " and ".join(data.get("filings") or []) or None
                 interpreted = data.get("question") or question
             except httpx.ConnectError:
                 answer = (

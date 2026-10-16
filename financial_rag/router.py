@@ -36,10 +36,11 @@ class QuestionPlan(BaseModel):
     year_over_year: bool
     # Copied from the question, not chosen from the filing list: matching it to a
     # filing is done in code (match_filing), which the model was unreliable at.
-    company: str | None = Field(
-        description="The company whose own filing the question asks about, as the question "
-                    "names it (or via its product or ticker); not an acquisition, competitor, "
-                    "customer or partner it merely mentions. null if it doesn't name one."
+    companies: list[str] = Field(
+        description="Each company whose own filing the question asks about, as the question "
+                    "names it (or via its product or ticker): two or more for a comparison. "
+                    "Not an acquisition, competitor, customer or partner it merely mentions. "
+                    "Empty if it doesn't name one."
     )
     # Also copied, not decided: any qualifier sends the question to text retrieval,
     # because the engine only holds company-wide annual figures. Left to the model,
@@ -63,6 +64,9 @@ class Answer:
     series: list[analysis.Series] = field(default_factory=list)
     filing: str | None = None                    # the one filing searched, if narrowed
     question: str = ""                           # as answered: follow-ups made standalone
+    # The filings searched when narrowed (one, or several for a comparison); empty
+    # when every visible filing was
+    filings: list[str] = field(default_factory=list)
 
 
 PLANNER_PROMPT = """You route questions about company financial filings.
@@ -87,11 +91,12 @@ every year in it. Never add a year just to compare with: set year_over_year inst
 or a comparison with the prior year.
 
 For both routes:
-- company: the company whose own filing the question asks about, when the question names \
-it ("Microsoft's" -> "Microsoft") or names its product or ticker ("Azure" -> "Microsoft", \
-"MSFT" -> "Microsoft"). Not a company that is only mentioned as an acquisition, \
-competitor, customer, supplier or partner of the company being asked about. null when \
-the question doesn't name the company it asks about.
+- companies: each company whose own filing the question asks about, when the question \
+names it ("Microsoft's" -> ["Microsoft"]) or names its product or ticker ("Azure" -> \
+["Microsoft"], "MSFT" -> ["Microsoft"]). A comparison names several ("Apple vs \
+Microsoft" -> ["Apple", "Microsoft"]). Not a company that is only mentioned as an \
+acquisition, competitor, customer, supplier or partner of the company being asked about. \
+Empty when the question doesn't name the company it asks about.
 - qualifier: anything in the question that narrows or changes what a listed metric \
 measures, copied from the question: a segment or product ("Intelligent Cloud", \
 "LinkedIn"), a geography ("United States"), a quarter ("Q4"), an adjusted or non-GAAP \
@@ -110,15 +115,21 @@ Examples:
 - "How did revenue grow from 2022 to 2024?" -> calculation, [revenue], [2022, 2023, 2024], true
 - "Gross and net margin for fiscal 2023" -> calculation, [gross_margin, net_margin], [2023], false
 - "Why did operating margin improve?" -> text
-- "How many employees did Acme have?" -> text, company "Acme" (a headcount, not shares)
+- "How many employees did Acme have?" -> text, companies ["Acme"] (a headcount, not shares)
 - "How fast did the cloud segment grow?" -> calculation, [revenue], [], true, qualifier \
 "cloud segment"
-- "What risks does Acme describe?" -> text, company "Acme"
-- "What was Microsoft's net margin?" -> calculation, [net_margin], company "Microsoft"
-- "What was revenue?" -> calculation, [revenue], company null
-- "How much goodwill came from the Activision Blizzard acquisition?" -> text, company null \
+- "What risks does Acme describe?" -> text, companies ["Acme"]
+- "What was Microsoft's net margin?" -> calculation, [net_margin], companies ["Microsoft"]
+- "What was revenue?" -> calculation, [revenue], companies []
+- "How much goodwill came from the Activision Blizzard acquisition?" -> text, companies [] \
 (Activision Blizzard is what was acquired, not the company asked about)
-- "How does Microsoft compete with Google?" -> text, company "Microsoft"
+- "How does Microsoft compete with Google?" -> text, companies ["Microsoft"] (Google is a \
+competitor it mentions, not a company whose filing is asked about)
+- "Compare Apple's and Microsoft's operating margins" -> calculation, [operating_margin], \
+companies ["Apple", "Microsoft"]
+- "Which had more revenue, Acme or Microsoft?" -> calculation, [revenue], companies \
+["Acme", "Microsoft"]
+- "How do Apple's and Microsoft's AI risks differ?" -> text, companies ["Apple", "Microsoft"]
 - "What was Intelligent Cloud revenue in 2024?" -> qualifier "Intelligent Cloud"
 - "What were dividends declared in fiscal 2024?" -> qualifier "declared"
 - "What were dividends paid in fiscal 2024?" -> qualifier null (that is the listed metric)
@@ -257,16 +268,29 @@ def plausible_metrics(question: str, metrics: list[str]) -> list[str]:
     ]
 
 
-def _no_filing_for(company: str, filings: dict[str, ingest.Filing]) -> Answer:
+def _joined(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
+
+
+def _no_filing_for(companies: list[str], filings: dict[str, ingest.Filing]) -> Answer:
     available = "; ".join(
         f"{f.company} ({name})" if f.company else name for name, f in filings.items()
     )
+    which = _joined(companies)
     return Answer(
-        f"No filing for {company} is available, so I can't answer that from a filing. "
-        f"Filings you can ask about: {available or 'none yet'}. Upload {company}'s 10-K "
+        f"No filing for {which} is available, so I can't answer that from a filing. "
+        f"Filings you can ask about: {available or 'none yet'}. Upload {which}'s 10-K "
         "to ask about it.",
         [], "none",
     )
+
+
+def _missing_note(missing: list[str]) -> str:
+    """Said first when a comparison names a company with no filing here."""
+    if not missing:
+        return ""
+    return (f"_No filing for {_joined(missing)} is available, so this covers only the "
+            "other companies named._\n\n")
 
 
 def plan_question(question: str) -> QuestionPlan:
@@ -287,12 +311,22 @@ def plan_question(question: str) -> QuestionPlan:
 
 
 def _text_answer(
-    question: str, owner: str, filing: ingest.Filing | None = None, preface: str = ""
+    question: str, owner: str, chosen: list[ingest.Filing] | None = None, preface: str = ""
 ) -> Answer:
-    scope = (filing.owner, filing.source_file) if filing else None
-    result = rag.query(question, owner, scope)
-    return Answer(preface + result.answer, result.sources, "text",
-                  filing=filing.source_file if filing else None)
+    """Retrieval over the chosen filings (each given its share), or over all of them."""
+    chosen = chosen or []
+    if len(chosen) > 1:
+        result = rag.query(question, owner,
+                           filings=[(f.owner, f.source_file) for f in chosen])
+    else:
+        scope = (chosen[0].owner, chosen[0].source_file) if chosen else None
+        result = rag.query(question, owner, scope)
+    return Answer(preface + result.answer, result.sources, "text", **_narrowed(chosen))
+
+
+def _narrowed(chosen: list[ingest.Filing]) -> dict:
+    names = [f.source_file for f in chosen]
+    return {"filing": names[0] if len(names) == 1 else None, "filings": names}
 
 
 def visible_facts(owner: str) -> list[financials.Fact]:
@@ -319,9 +353,10 @@ def answer(
     records the question it actually answered.
 
     `source_file` (picked in the UI) narrows both routes to that one filing.
-    Otherwise the planner narrows them when the question names a company or
-    filing; a question that names none searches every filing, and the prompt
-    makes the model say which filing each figure comes from.
+    Otherwise the planner narrows them to the filings of the companies the
+    question names: one, or several for a comparison. A question that names none
+    searches every filing, and the prompt makes the model say which filing each
+    figure comes from.
     """
     asked = rewriter(question, history) if history else question
     result = _answer(asked, owner, source_file, planner)
@@ -342,19 +377,24 @@ def _answer(question: str, owner: str, source_file: str | None, planner) -> Answ
         except Exception as exc:
             print(f"Planner failed, answering from text: {exc}")
 
-    chosen = source_file
-    if chosen is None and plan and plan.company:
-        named = filings_named(plan.company, filings)
-        if not named:
+    chosen: list[str] = [source_file] if source_file else []
+    missing: list[str] = []
+    if not chosen and plan and plan.companies:
+        for company in dict.fromkeys(plan.companies):
+            named = filings_named(company, filings)
+            if not named:
+                missing.append(company)
+            chosen += [name for name in named if name not in chosen]
+        if not chosen:
             # Answering with another company's figures would be wrong, not partial
-            return _no_filing_for(plan.company, filings)
-        chosen = named[0] if len(named) == 1 else None
-    filing = filings[chosen] if chosen else None
-    if filing:
-        facts = [f for f in facts if f.source_file == filing.source_file]
+            return _no_filing_for(missing, filings)
+    narrowed = [filings[name] for name in chosen]
+    note = _missing_note(missing)
+    if narrowed:
+        facts = [f for f in facts if f.source_file in chosen]
     metrics = plausible_metrics(question, plan.metrics) if plan else []
     if plan is None or plan.route != "calculation" or not metrics or not facts:
-        return _text_answer(question, owner, filing)
+        return _text_answer(question, owner, narrowed, note)
 
     parts = None
     if plan.qualifier:
@@ -364,7 +404,7 @@ def _answer(question: str, owner: str, source_file: str | None, planner) -> Answ
         # engine's figures, so it goes to text.
         breakdown = breakdown_plan(metrics, plan.qualifier, facts)
         if breakdown is None:
-            return _text_answer(question, owner, filing)
+            return _text_answer(question, owner, narrowed, note)
         metrics, parts = breakdown
     series = analysis.analyze(facts, metrics, plan.fiscal_years, plan.year_over_year, parts)
 
@@ -375,12 +415,13 @@ def _answer(question: str, owner: str, source_file: str | None, planner) -> Answ
             for s in series for r in s.results if r.problem
         })
         preface = (
-            "I couldn't calculate this from the structured figures"
+            note
+            + "I couldn't calculate this from the structured figures"
             + (":\n" + "\n".join(f"- {p}" for p in problems) if problems else ".")
             + "\n\nFrom the filing text instead:\n\n"
         )
-        return _text_answer(question, owner, filing, preface)
+        return _text_answer(question, owner, narrowed, preface)
 
-    markdown, sources = analysis.render(series)
-    return Answer(markdown, sources, "calculation", series,
-                  filing=filing.source_file if filing else None)
+    names = {name: f.company for name, f in filings.items() if f.company}
+    markdown, sources = analysis.render(series, names)
+    return Answer(note + markdown, sources, "calculation", series, **_narrowed(narrowed))

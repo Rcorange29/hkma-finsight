@@ -95,7 +95,29 @@ def test_planner_picks_the_filing_a_question_names(question):
     plan = router.plan_question(question)
     if route is not None:
         assert plan.route == route
-    assert router.match_filing(plan.company, FILINGS) == filing
+    named = [name for company in plan.companies
+             for name in router.filings_named(company, FILINGS)]
+    assert named == ([filing] if filing else []), plan
+
+
+# question -> (route, companies named); a comparison names each company it compares
+COMPARED = {
+    "Compare Apple's and Microsoft's operating margins": ("calculation", {"apple", "microsoft"}),
+    "Which had more revenue in 2024, Microsoft or Acme?": ("calculation", {"microsoft", "acme"}),
+    "Apple vs Microsoft: net income": ("calculation", {"apple", "microsoft"}),
+    "How do Apple's and Microsoft's AI risks differ?": ("text", {"apple", "microsoft"}),
+    "Who audits Apple and who audits Microsoft?": ("text", {"apple", "microsoft"}),
+    # A competitor mentioned is not a company compared
+    "How does Microsoft compete with Google?": ("text", {"microsoft"}),
+}
+
+
+@pytest.mark.parametrize("question", list(COMPARED))
+def test_planner_names_every_company_compared(question):
+    route, companies = COMPARED[question]
+    plan = router.plan_question(question)
+    assert plan.route == route, plan
+    assert {c.lower().split()[0] for c in plan.companies} == companies, plan
 
 
 # question -> whether the question qualifies a listed metric (segment, variant, ...)
