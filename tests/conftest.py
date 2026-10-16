@@ -1,6 +1,6 @@
 import pytest
 
-from financial_rag import financials, ingest, rag, usage
+from financial_rag import edgar, financials, ingest, rag, usage
 
 
 @pytest.fixture(autouse=True)
@@ -9,6 +9,16 @@ def trusted_user_header(monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "1")
     monkeypatch.delenv("COGNITO_ISSUER", raising=False)
     monkeypatch.delenv("COGNITO_CLIENT_ID", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_edgar(tmp_path, monkeypatch):
+    """Tests never reach the SEC; test_xbrl.py and test_edgar.py feed it data instead."""
+    def offline(url, agent):
+        raise edgar.EdgarUnavailable(f"tests are offline: {url}")
+
+    monkeypatch.setattr(edgar, "_get", offline)
+    monkeypatch.setattr(edgar, "CACHE_DIR", tmp_path / "edgar_cache")
 
 
 @pytest.fixture(autouse=True)

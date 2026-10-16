@@ -337,7 +337,8 @@ def format_change(metric: Metric, change: Change) -> str:
 
 
 def cite(fact: Fact) -> str:
-    return f"({fact.source_file}, p.{page_number(fact.page)})"
+    confirmed = "; matches SEC XBRL data" if fact.xbrl == "match" else ""
+    return f"({fact.source_file}, p.{page_number(fact.page)}{confirmed})"
 
 
 def _describe_input(fact: Fact) -> str:

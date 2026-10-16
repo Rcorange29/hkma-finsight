@@ -95,6 +95,8 @@ relative paths.
 | `eval_answers.py` | End-to-end benchmark: 47 questions on two companies' filings through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
 | `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `GET /documents`, `GET /financials`, `GET /usage`, `GET /health`. |
 | `usage.py` | Usage limits: questions and uploads per user per month, questions per minute, and a daily cap across all users. |
+| `edgar.py` | SEC EDGAR client: ticker and company lookup, filings, XBRL company facts; identified, rate-limited and cached. |
+| `xbrl.py` | Checks each extracted figure against the company's XBRL data: matches are marked, contradictions dropped. |
 | `app.py` | Streamlit chat UI with expandable source citations and a sidebar for uploading PDFs. |
 | `evaluate.py` | Optional RAGAs evaluation (faithfulness, answer relevancy) with a before/after comparison table. |
 | `config.py` | The models used: `CHAT_MODEL` for every language-model call, the embedding model and the reranker. |
@@ -143,6 +145,26 @@ figures (21-22 line items, two or three years each), and on Apple's FY2025 10-K 
 every mapping verified. Which items the model maps can vary a little between runs. For
 example, "Diluted 7,469", which wraps under its heading, is sometimes skipped. A skipped
 item is reported as missing, never guessed.
+
+**Checked against the SEC's own data.** Every 10-K also files its statements as XBRL:
+machine-readable values the company tags itself, which the SEC publishes per company.
+When the cover page names an SEC registrant, `xbrl.py` looks up each extracted figure in
+that data (EDGAR's companyfacts API). It uses the line item's us-gaap tags, the fiscal year
+of the period's end date, and a full-year period for income and cash-flow items.
+- A figure XBRL reports the same is marked, and answers cite it as "matches SEC XBRL data".
+- A figure XBRL reports differently is dropped, never stored.
+- A figure XBRL has no value for keeps its page check alone.
+
+On the two sample filings every statement figure matches: Apple 59 of 59 and Microsoft
+56 of 56. That includes Apple's diluted share count, which XBRL confirms as 15,004,697,000.
+Read at the dollars' scale of millions, it would have been 1,000× too large and dropped.
+Segment, country and product breakdowns are dimensional XBRL, which companyfacts doesn't
+include, so they stand on their add-up check.
+
+EDGAR requires every automated request to identify who is asking. Set
+`SEC_USER_AGENT="<app name> <your email>"` in `.env`. Without it, nothing is fetched and
+figures are stored on the page check alone. Requests stay under the SEC's 10 a second,
+and responses are cached in `chroma_db/edgar_cache/`.
 
 **Breakdowns.** Totals are also broken down from the notes, extracted the same way:
 - revenue and operating income by reportable segment;
@@ -821,6 +843,9 @@ pytest
 Tests cover:
 - the chunking logic and prompt formatting;
 - the upload path: validation, staging, replace-on-reupload;
+- the XBRL check: matching by tag, unit, fiscal year and full-year period (a quarter
+  ending the same day never matches); contradicted figures dropped; no network, no
+  contact address or an unknown company leaves figures unchanged; EDGAR caching;
 - sign-in tokens: valid ID tokens accepted; forged, unsigned, expired, wrong-issuer,
   wrong-audience and access tokens rejected; `X-User-Id` ignored unless in local mode;
 - usage limits: monthly, per-minute and daily caps, calendar resets, refunds of failed
