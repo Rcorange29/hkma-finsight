@@ -72,7 +72,8 @@ below: a reported amount (such as revenue or net income), a margin, ratio or ret
 growth, or a comparison between years. This holds in any wording or tense and whether or \
 not a year is named: with no year, the latest year in the filing is used.
 Choose "text" when the question asks why or how something happened, or about anything \
-not in the list: risks, strategy, accounting policies, other amounts. A listed metric for \
+not in the list: risks, strategy, accounting policies, other amounts, and counts of \
+anything other than shares (employees, customers, stores). A listed metric for \
 one part of the company (a segment, product line, geography) is still "calculation", with \
 that part in qualifier.
 
@@ -109,6 +110,7 @@ Examples:
 - "How did revenue grow from 2022 to 2024?" -> calculation, [revenue], [2022, 2023, 2024], true
 - "Gross and net margin for fiscal 2023" -> calculation, [gross_margin, net_margin], [2023], false
 - "Why did operating margin improve?" -> text
+- "How many employees did Acme have?" -> text, company "Acme" (a headcount, not shares)
 - "How fast did the cloud segment grow?" -> calculation, [revenue], [], true, qualifier \
 "cloud segment"
 - "What risks does Acme describe?" -> text, company "Acme"
@@ -239,6 +241,22 @@ def breakdown_plan(
     return keys, sorted(parts)
 
 
+# Metrics the planner reaches for when a question merely counts something. "How
+# many employees did Apple have?" came back as diluted_shares 8 times in 8, so a
+# share count is used only when the question says "share" (or EPS).
+_METRIC_NEEDS_WORD = {
+    "diluted_shares": re.compile(r"\bshares?\b|\beps\b", re.IGNORECASE),
+}
+
+
+def plausible_metrics(question: str, metrics: list[str]) -> list[str]:
+    """The planned metrics, deduplicated, minus any the question's wording rules out."""
+    return [
+        m for m in dict.fromkeys(metrics)
+        if m not in _METRIC_NEEDS_WORD or _METRIC_NEEDS_WORD[m].search(question)
+    ]
+
+
 def _no_filing_for(company: str, filings: dict[str, ingest.Filing]) -> Answer:
     available = "; ".join(
         f"{f.company} ({name})" if f.company else name for name, f in filings.items()
@@ -334,10 +352,10 @@ def _answer(question: str, owner: str, source_file: str | None, planner) -> Answ
     filing = filings[chosen] if chosen else None
     if filing:
         facts = [f for f in facts if f.source_file == filing.source_file]
-    if plan is None or plan.route != "calculation" or not plan.metrics or not facts:
+    metrics = plausible_metrics(question, plan.metrics) if plan else []
+    if plan is None or plan.route != "calculation" or not metrics or not facts:
         return _text_answer(question, owner, filing)
 
-    metrics = list(dict.fromkeys(plan.metrics))     # dedupe, keep order
     parts = None
     if plan.qualifier:
         # A part of the company the filing breaks out (a segment, an area, a
