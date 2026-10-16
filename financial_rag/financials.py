@@ -137,6 +137,43 @@ LINE_ITEMS: dict[str, LineItem] = {
 
 LineItemKey = Literal[tuple(LINE_ITEMS)]  # type: ignore[valid-type]
 
+# What a row reporting each line item is called, in some wording: the printed
+# label must fit. Asked for line items a statement doesn't have, the model
+# substitutes a neighbour despite being told not to (a bank's "Total noninterest
+# expense" for cost of revenue, an insurer's "Total assets" for total current
+# assets, Coca-Cola's "Other operating charges" for R&D), and XBRL can only catch
+# that when the company tags the line item. Checked against every row XBRL
+# confirmed for ten companies.
+PRINTED_AS: dict[str, re.Pattern] = {
+    key: re.compile(pattern, re.IGNORECASE)
+    for key, pattern in {
+        "revenue": r"revenue|\bsales\b",
+        "cost_of_revenue": r"\bcosts? of\b",
+        "gross_profit": r"\bgross (?:profit|margin)",
+        "research_and_development": r"\bresearch\b",
+        "operating_income": r"\boperat",
+        "income_before_taxes": r"\bbefore\b.*\btax|\bpre-?tax",
+        "income_tax_expense": r"\btax",
+        "net_income": r"\bnet\b.{0,8}\b(?:income|earnings|loss)",
+        "eps_basic": r"\bbasic\b",
+        "eps_diluted": r"\bdiluted\b",
+        "diluted_shares": r"\bdiluted\b",
+        "cash_and_equivalents": r"\bcash\b",
+        "total_current_assets": r"\bcurrent assets\b",
+        "total_assets": r"\btotal assets\b",
+        "total_current_liabilities": r"\bcurrent liabilities\b",
+        "total_liabilities": r"\btotal liabilities\b(?! and)",
+        "long_term_debt": r"\bdebt\b|\bborrowings\b|\bnotes payable\b",
+        "total_equity": r"^(?!.*\bliabilities\b).*\b(?:equity|investment|deficit)\b",
+        "operating_cash_flow": r"\boperat",
+        "capital_expenditures":
+            r"\bproperty\b|\bequipment\b|\bcapital expenditures?\b|\bproductive assets\b",
+        "dividends_paid": r"\bdividends?\b|\bdistributions?\b",
+        "share_repurchases":
+            r"\brepurchase|\btreasury\b|\bbuybacks?\b|\bpurchases? of (?:common )?stock\b",
+    }.items()
+}
+
 
 @dataclass(frozen=True)
 class Breakdown:
@@ -544,7 +581,7 @@ def extract_facts(
             rejected += 1
             continue
         row = verify_row(text, mapping.label, mapping.value, mapping.fiscal_year)
-        if row is None:
+        if row is None or not PRINTED_AS[item.key].search(row.label):
             rejected += 1
             continue
         if item.unit == "USD/share":

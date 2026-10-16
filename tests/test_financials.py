@@ -336,11 +336,76 @@ def test_extract_facts_drops_mappings_that_fail_verification():
     assert {f.metric for f in facts} == {"operating_income"}
 
 
-def test_extract_facts_drops_a_metric_mapped_to_conflicting_rows():
+def test_every_line_item_says_how_its_row_is_printed():
+    assert set(financials.PRINTED_AS) == set(financials.LINE_ITEMS)
+
+
+@pytest.mark.parametrize(
+    ("metric", "label"),
+    [
+        # Rows XBRL confirmed, in each company's wording
+        ("revenue", "Sales to customers"),                      # Johnson & Johnson
+        ("revenue", "Total net revenue"),                       # JPMorgan
+        ("cost_of_revenue", "Cost of products sold"),
+        ("gross_profit", "Gross margin"),                       # Apple, Microsoft
+        ("operating_income", "Income from operations"),         # Alphabet
+        ("income_before_taxes", "Earnings before provision for taxes on income"),
+        ("income_tax_expense", "Income taxes"),                 # Coca-Cola
+        ("net_income", "Net Income Attributable to Shareowners of The Coca-Cola Company"),
+        ("eps_diluted", "Diluted"),
+        ("diluted_shares", "Weighted-average diluted shares"),
+        ("total_equity", "Total shareholders' investment"),     # Target
+        ("long_term_debt", "Term debt"),                        # Apple
+        ("capital_expenditures", "Purchases related to property and equipment and "
+                                 "intangible assets"),          # NVIDIA
+        ("dividends_paid", "Cash distributions to common stockholders"),   # Realty Income
+        ("share_repurchases", "Purchases of stock for treasury"),          # Coca-Cola
+        ("share_repurchases", "Common stock repurchased"),                 # Microsoft
+    ],
+)
+def test_printed_labels_that_fit_the_line_item(metric, label):
+    assert financials.PRINTED_AS[metric].search(label)
+
+
+@pytest.mark.parametrize(
+    ("metric", "label"),
+    [
+        # Substitutions the model made for line items these statements lack
+        ("cost_of_revenue", "Total noninterest expense"),            # JPMorgan
+        ("cost_of_revenue", "Total claims and expenses"),            # Travelers
+        ("operating_income", "Income before income tax expense"),    # JPMorgan
+        ("operating_income", "Earnings before provision for taxes on income"),   # J&J
+        ("gross_profit", "Income before income taxes"),              # Travelers
+        ("research_and_development", "Other operating charges"),     # Coca-Cola
+        ("research_and_development", "Amortization of deferred acquisition costs"),
+        ("total_current_assets", "Total assets"),                    # banks, insurers, REITs
+        ("total_current_liabilities", "Total liabilities"),
+        ("total_liabilities", "Total Liabilities and Equity"),       # Coca-Cola
+        ("total_equity", "Total liabilities and shareholders' equity"),
+        ("capital_expenditures", "Purchases of investments: Fixed maturities"),  # Travelers
+        ("capital_expenditures", "Purchases"),                       # JPMorgan
+    ],
+)
+def test_printed_labels_that_do_not(metric, label):
+    assert not financials.PRINTED_AS[metric].search(label)
+
+
+def test_extract_facts_rejects_a_row_printed_as_another_line_item():
+    # Asked for total current assets, the model points at "Total assets"
     facts = extract_facts(PAGES, "msft.pdf", "public", mapper=_mapper(
-        dict(metric="net_income", page=66, label="Net income", value="88,136", fiscal_year=2024),
-        dict(metric="net_income", page=66, label="Operating income", value="109,433",
+        dict(metric="total_current_assets", page=68, label="Total assets", value="512,163",
              fiscal_year=2024),
+        dict(metric="total_assets", page=68, label="Total assets", value="512,163",
+             fiscal_year=2024),
+    ))
+    assert {f.metric for f in facts} == {"total_assets"}
+
+
+def test_extract_facts_drops_a_metric_mapped_to_conflicting_rows():
+    # Both rows are printed "Diluted": earnings per share, and the share count
+    facts = extract_facts(PAGES, "msft.pdf", "public", mapper=_mapper(
+        dict(metric="eps_diluted", page=66, label="Diluted", value="$ 11.80", fiscal_year=2024),
+        dict(metric="eps_diluted", page=66, label="Diluted", value="7,469", fiscal_year=2024),
         dict(metric="revenue", page=66, label="Total revenue", value="245,122", fiscal_year=2024),
     ))
     assert {f.metric for f in facts} == {"revenue"}
