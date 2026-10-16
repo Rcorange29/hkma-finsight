@@ -205,6 +205,8 @@ with st.sidebar:
 # Render existing chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
+        if msg.get("interpreted"):
+            st.caption(_md(f"Read as: {msg['interpreted']}"))
         st.markdown(_md(msg["content"]))
         if msg.get("filing"):
             st.caption(f"Answered from {msg['filing']} only.")
@@ -213,6 +215,10 @@ for msg in st.session_state.messages:
 
 # Chat input
 if question := st.chat_input("Ask a question about the financial reports …"):
+    # Earlier turns, so the API can read a follow-up ("and in 2023?") in context
+    history = [
+        {"role": m["role"], "content": m["content"]} for m in st.session_state.messages[-6:]
+    ]
     # Display user message
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
@@ -228,6 +234,7 @@ if question := st.chat_input("Ask a question about the financial reports …"):
                     json={
                         "question": question,
                         "source_file": None if ask_about == ALL_FILINGS else ask_about,
+                        "history": history,
                     },
                     headers=HEADERS,
                     timeout=60.0,
@@ -237,6 +244,7 @@ if question := st.chat_input("Ask a question about the financial reports …"):
                 answer = data["answer"]
                 sources = data.get("sources", [])
                 filing = data.get("filing")
+                interpreted = data.get("question") or question
             except httpx.ConnectError:
                 answer = (
                     "Could not connect to the API server. "
@@ -244,16 +252,21 @@ if question := st.chat_input("Ask a question about the financial reports …"):
                 )
                 sources = []
                 filing = None
+                interpreted = question
             except httpx.HTTPStatusError as exc:
                 detail = exc.response.json().get("detail", str(exc))
                 answer = f"API error ({exc.response.status_code}): {detail}"
                 sources = []
                 filing = None
+                interpreted = question
             except Exception as exc:
                 answer = f"Unexpected error: {exc}"
                 sources = []
                 filing = None
+                interpreted = question
 
+        if interpreted != question:
+            st.caption(_md(f"Read as: {interpreted}"))
         st.markdown(_md(answer))
         if filing:
             st.caption(f"Answered from {filing} only.")
@@ -263,5 +276,6 @@ if question := st.chat_input("Ask a question about the financial reports …"):
 
     # Persist assistant message
     st.session_state.messages.append(
-        {"role": "assistant", "content": answer, "sources": sources, "filing": filing}
+        {"role": "assistant", "content": answer, "sources": sources, "filing": filing,
+         "interpreted": interpreted if interpreted != question else None}
     )

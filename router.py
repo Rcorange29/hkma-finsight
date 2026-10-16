@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 import analysis
 import financials
+import followup
 import ingest
 import rag
 from ingest import PUBLIC_OWNER
@@ -54,6 +55,7 @@ class Answer:
     route: str                                   # calculation | text
     series: list[analysis.Series] = field(default_factory=list)
     filing: str | None = None                    # the one filing searched, if narrowed
+    question: str = ""                           # as answered: follow-ups made standalone
 
 
 PLANNER_PROMPT = """You route questions about company financial filings.
@@ -172,16 +174,32 @@ def visible_facts(owner: str) -> list[financials.Fact]:
 
 
 def answer(
-    question: str, owner: str, source_file: str | None = None, planner=plan_question
+    question: str,
+    owner: str,
+    source_file: str | None = None,
+    planner=plan_question,
+    history: list[tuple[str, str]] | None = None,
+    rewriter=followup.standalone_question,
 ) -> Answer:
     """
     Answer from the caller's filings and the samples.
+
+    `history` (earlier (role, text) turns, oldest first) lets a follow-up such as
+    "and in 2023?" be rewritten into a standalone question first; the answer
+    records the question it actually answered.
 
     `source_file` (picked in the UI) narrows both routes to that one filing.
     Otherwise the planner narrows them when the question names a company or
     filing; a question that names none searches every filing, and the prompt
     makes the model say which filing each figure comes from.
     """
+    asked = rewriter(question, history) if history else question
+    result = _answer(asked, owner, source_file, planner)
+    result.question = asked
+    return result
+
+
+def _answer(question: str, owner: str, source_file: str | None, planner) -> Answer:
     filings = visible_filings(owner)
     if source_file is not None and source_file not in filings:
         raise UnknownFiling(f"No filing named {source_file}.")

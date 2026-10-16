@@ -84,6 +84,7 @@ carries a visible "Not verified against the excerpts" warning naming each proble
 | `financials.py` | Extracts the income statement, balance sheet and cash flow statement into verified, cited figures; stores them in SQLite. |
 | `analysis.py` | Deterministic calculations (margins, ratios, returns, growth, YoY, CAGR) over those figures, and the cited write-up. |
 | `router.py` | Plans each question, narrows it to the filing it names, and sends it to the analysis engine or to text retrieval. |
+| `followup.py` | Rewrites a follow-up ("And in 2023?") into a standalone question using the last few turns. |
 | `rag.py` | Hybrid retrieval, score-threshold filtering, cross-encoder reranking, prompting. Exposes `query()`. |
 | `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
 | `eval_retrieval.py` | Retrieval benchmark: three pipeline configurations on 72 questions, scored on whether the right passage is retrieved. |
@@ -218,6 +219,29 @@ may see, so one user's filings never influence another's results. Tests cover bo
 
 `HYBRID_SEARCH=0` switches back to the semantic-only pipeline, unchanged from before.
 `RERANKER=cross-encoder` drops the LLM reranking step.
+
+---
+
+## Follow-up questions
+
+The chat keeps context. "What was Microsoft's net income in fiscal 2024?" followed by
+"And in 2023?" is read as "What was Microsoft's net income in fiscal 2023?". Then
+"What about Acme?" moves the same question to Acme's filing.
+
+- The UI sends the last six messages with each question (`history` in `POST /query`).
+- `followup.py` has gpt-4o-mini rewrite the new question so it stands on its own. It
+  resolves only what the question refers back to. A question that already stands alone,
+  or names a new company or metric, is left as asked or replaces the earlier subject.
+- The rewritten question then goes through the unchanged pipeline: planner, filing choice,
+  calculation or retrieval, and the answer check.
+- The UI shows "Read as: …" above the answer whenever the question was rewritten, and the
+  API returns it as `question`.
+- If the rewrite call fails, the question is answered as asked. Questions with no
+  history make no extra call.
+
+The opt-in live test (`RUN_LIVE_TESTS=1 pytest tests/test_followup_live.py`) passed 5 of
+5 cases, three runs in a row: another year, another metric, another company, a pronoun,
+and an already-standalone question.
 
 ---
 
@@ -421,6 +445,11 @@ Other questions return `"route": "text"`, an empty `calculations` list, and the
 retrieved passages as `sources`. Each of those carries a `retrieval` record of how its
 chunk was found; see [Hybrid retrieval](#hybrid-retrieval).
 
+Add `"history": [{"role": "user", "content": "…"}, {"role": "assistant", "content": "…"}]`
+(earlier turns, oldest first) so a follow-up such as "And in 2023?" is read in context.
+`question` in the response is the question as answered, rewritten if it was a follow-up;
+see [Follow-up questions](#follow-up-questions).
+
 Add `"source_file": "acme-10k.pdf"` to the request to answer from that one filing. Without
 it, a question that names a company is narrowed to that company's filing. `filing` in the
 response names the one filing an answer was drawn from, or is `null` if it drew on all of
@@ -615,6 +644,9 @@ Tests cover:
     input is cited in the answer;
   - **routing**: calculation vs. text, fallbacks, and that the planner and engine only see
     the caller's figures;
+- follow-ups: the rewritten question is what gets planned and answered, no rewrite
+  without history, fallback when the rewrite fails, the transcript's limits, and the
+  API's `history` and `question` fields (malformed history is rejected);
 - which filing a question is about: company names from cover pages, matching a named
   company to a filing, narrowing both routes to it, the picked filing overriding the
   question, own files shadowing samples, and refusing filings the caller can't see.
@@ -637,7 +669,8 @@ label, to keep it open. PRs that change workflow files are left to merge by hand
 ## Notes and limitations
 
 - Costs money: ingestion embeds every chunk and makes one extraction call per filing.
-  Each question makes a small planning call. Text questions also make an LLM reranking
+  Each question makes a small planning call, plus a rewrite call for follow-ups. Text
+  questions also make an LLM reranking
   call (about 11,000 input tokens), the answer call, and a retry if the answer check
   fails. All of these use `gpt-4o-mini`.
 - Page numbers in citations count from 1, as PDF viewers and the filings' printed page
