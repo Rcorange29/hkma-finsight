@@ -14,7 +14,7 @@ checked by hand in Microsoft's FY2024 10-K:
   - cited:    the answer cites a page (refusals excepted)
 
 Also reports latency and gpt-4o-mini tokens per question, with a cost estimate
-at list prices. A run makes about 100 model calls: roughly $0.10-0.15. Needs the
+at list prices. A run costs about $0.02-0.03. Needs the
 ingested sample (python ingest.py) and its figures (python financials.py).
 Results go to answer_eval_results.json.
 
@@ -105,11 +105,21 @@ CASES = [
     Case("text", "How much goodwill was recorded for the Activision Blizzard acquisition?",
          [("50,969", "$51.0 billion")], "text"),
     Case("text", "What was short-term unearned revenue at June 30, 2024?", ["57,582"], "text"),
-    Case("text", "What was Intelligent Cloud revenue in fiscal 2024?", ["105,362"], "text"),
+    # Parts of the company the filing breaks out: calculated from the verified breakdowns
+    Case("breakdown", "What was Intelligent Cloud revenue in fiscal 2024?", ["105,362"],
+         "calculation"),
+    Case("breakdown", "What was LinkedIn revenue in fiscal 2024?", ["16,372"], "calculation"),
+    Case("breakdown", "How much revenue came from the United States in fiscal 2024?",
+         ["124,704"], "calculation"),
+    Case("breakdown", "What was the Intelligent Cloud operating margin in fiscal 2024?",
+         ["47.1%"], "calculation"),
+    Case("breakdown", "How did Gaming revenue change from fiscal 2023 to 2024?", ["39.0%"],
+         "calculation"),
+    # Not a part the filing breaks out: from the text
+    Case("text", "What was Microsoft Cloud revenue in fiscal 2024?", ["$137.4 billion"], "text"),
     Case("text", "Who is Microsoft's independent auditor?", ["Deloitte"], "text"),
     Case("text", "How fast did Azure and other cloud services revenue grow in fiscal 2024?",
          ["30%"], "text"),
-    Case("text", "What was LinkedIn revenue in fiscal 2024?", ["16,372"], "text"),
     Case("text", "What are the main risks the company describes related to AI?", [], "text"),
     # Declared, not paid: the engine only has dividends paid ($21,771 million)
     Case("text", "What were total dividends declared in fiscal 2024?",
@@ -117,7 +127,7 @@ CASES = [
     # Follow-ups, read in the context of the conversation
     Case("follow-up", "And in 2023?", ["$72,361 million"], "calculation", NET_INCOME_2024),
     Case("follow-up", "What about the operating margin?", ["44.6%"], "calculation", REVENUE_2024),
-    Case("follow-up", "And Dynamics?", ["6,481"], "text", LINKEDIN_2024),
+    Case("follow-up", "And Dynamics?", ["6,481"], "calculation", LINKEDIN_2024),
     Case("follow-up", "How many of them were in the U.S.?", ["126,000"], "text", EMPLOYEES),
     # Nothing to answer from: must say so, not answer with another filing's figures
     Case("refusal", "What was Apple's revenue in fiscal 2024?", absent=["245,122"], refusal=True),

@@ -19,6 +19,12 @@ Extraction is split so that no number ever comes from a language model:
 Every stored figure keeps the file, page and row it was read from, so any
 calculation can cite each of its inputs.
 
+Breakdowns of the totals are extracted the same way: revenue and operating
+income by reportable segment, revenue by geography, and revenue by product or
+service line, from the notes. A breakdown is stored only if its parts add up
+exactly to the verified company total for every year, so a mis-mapped table
+(say, long-lived assets by country) can't pass for revenue.
+
 Records live in a SQLite file inside the vector store directory, so rebuilding
 the store (start.py --reingest) rebuilds both together.
 
@@ -129,6 +135,35 @@ LineItemKey = Literal[tuple(LINE_ITEMS)]  # type: ignore[valid-type]
 
 
 @dataclass(frozen=True)
+class Breakdown:
+    """A total split into parts: a segment, a geographic area, a product line."""
+    key: str
+    name: str
+    dimension: str      # segment | geography | product
+    total: str          # the LINE_ITEMS key the parts must add up to
+
+
+BREAKDOWNS: dict[str, Breakdown] = {
+    b.key: b
+    for b in [
+        Breakdown("segment_revenue", "Segment revenue", "segment", "revenue"),
+        Breakdown("segment_operating_income", "Segment operating income", "segment",
+                  "operating_income"),
+        Breakdown("geographic_revenue", "Revenue by geography", "geography", "revenue"),
+        Breakdown("product_revenue", "Revenue by product or service", "product", "revenue"),
+    ]
+}
+
+BreakdownKey = Literal[tuple(BREAKDOWNS)]  # type: ignore[valid-type]
+
+# Display names for every stored metric key
+ITEM_NAMES: dict[str, str] = {
+    **{k: item.name for k, item in LINE_ITEMS.items()},
+    **{k: b.name for k, b in BREAKDOWNS.items()},
+}
+
+
+@dataclass(frozen=True)
 class Fact:
     """One verified figure: a line item's value for one fiscal year."""
 
@@ -141,6 +176,7 @@ class Fact:
     label: str          # row label as printed in the filing
     page: int
     line: str           # the row as printed: the citation excerpt
+    segment: str = ""   # for breakdowns: the part ("Intelligent Cloud"); "" for totals
 
 
 # ---------------------------------------------------------------------------
@@ -439,11 +475,160 @@ def extract_facts(
 
 
 # ---------------------------------------------------------------------------
+# Breakdowns: segments, geography, product lines
+# ---------------------------------------------------------------------------
+
+_BREAKDOWN_PAGE = re.compile(
+    r"segment|geographic|product and service|by product|offerings", re.IGNORECASE)
+MAX_BREAKDOWN_PAGES = 6
+_NUMBERS_ONLY = re.compile(r"^[\s$]*(?:\(?\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*\)?[\s$]*)+$")
+_FOOTNOTE = re.compile(r"\s*\([a-z]\)\s*$")
+
+
+def rejoin_rows(text: str) -> str:
+    """
+    Put back rows that PDF text extraction split across lines, e.g.
+    "Gaming 21,503" / "" / "15,466" / "" / "16,230" -> "Gaming 21,503 15,466 16,230".
+    Number-only lines are appended to the data row above them.
+    """
+    out: list[str] = []
+    pending_blank = 0
+    for line in text.splitlines():
+        if not line.strip():
+            pending_blank += 1
+            continue
+        years_only = all(_YEAR.fullmatch(t) for t in line.split())
+        if (_NUMBERS_ONLY.match(line) and not years_only and out
+                and split_row(out[-1])[1] and split_row(out[-1])[0]):
+            out[-1] = f"{out[-1].rstrip()}  {line.strip()}"
+        else:
+            out.extend([""] * pending_blank)
+            out.append(line)
+        pending_blank = 0
+    return "\n".join(out)
+
+
+def breakdown_pages(pages: dict[int, str]) -> dict[int, str]:
+    """Note and MD&A pages that may hold breakdown tables, densest first, rejoined."""
+    candidates = [
+        (len(_GROUPED.findall(text)), number, text)
+        for number, text in pages.items()
+        if _BREAKDOWN_PAGE.search(text) and len(_GROUPED.findall(text)) >= 6
+    ]
+    candidates.sort(key=lambda c: (-c[0], c[1]))
+    return {number: rejoin_rows(text) for _, number, text in candidates[:MAX_BREAKDOWN_PAGES]}
+
+
+class PartMapping(BaseModel):
+    breakdown: BreakdownKey
+    part: str
+    page: int
+    label: str
+    value: str
+    fiscal_year: int
+
+
+class PartMappings(BaseModel):
+    rows: list[PartMapping]
+
+
+_BREAKDOWN_PROMPT = """You find tables in a company's 10-K that split a company total into \
+its parts, and map each part's row. You will get the text of some pages, each starting \
+with "=== Page N ===".
+
+The breakdowns to look for:
+{breakdowns}
+
+For every row that is one part of such a table (never the "Total" row), return:
+- breakdown: the breakdown key
+- part: the part's name, e.g. "Intelligent Cloud", "United States", "LinkedIn"
+- page: the page number N the row is on
+- label: the row label exactly as printed
+- value: one value from that row exactly as printed
+- fiscal_year: the fiscal year of the column that value is in
+
+Rules:
+- Only tables whose parts add up to the company's total revenue or total operating income \
+for the year. Skip other tables that list segments or countries (assets, goodwill, \
+headcount, unearned revenue, ...).
+- Never compute, add up or derive a value.
+- Each (breakdown, part) at most once.
+"""
+
+
+def _map_parts(pages: dict[int, str]) -> list[PartMapping]:
+    """Ask the model which rows are the parts of each breakdown. Values are only hints."""
+    from langchain_openai import ChatOpenAI
+
+    breakdowns = "\n".join(
+        f"- {b.key}: {ITEM_NAMES[b.total].lower()} by {b.dimension}" for b in BREAKDOWNS.values()
+    )
+    text = "\n\n".join(f"=== Page {n} ===\n{t}" for n, t in pages.items())
+    llm = ChatOpenAI(model=EXTRACTION_MODEL, temperature=0).with_structured_output(PartMappings)
+    return llm.invoke(
+        [("system", _BREAKDOWN_PROMPT.format(breakdowns=breakdowns)), ("human", text)]
+    ).rows
+
+
+def extract_breakdowns(
+    pages: dict[int, str], source_file: str, owner: str, totals: list[Fact], mapper=_map_parts
+) -> list[Fact]:
+    """
+    Verified parts of the company totals in `totals` (revenue, operating income).
+
+    Each mapped row is verified like a statement row. Then each breakdown is
+    kept only if its parts, for every year they report, add up exactly to the
+    company total for that year. Anything else (a missing part, a row from
+    another table, a wrong year) fails that check, and the whole breakdown is
+    dropped rather than stored incomplete.
+    """
+    candidates = breakdown_pages(pages)
+    if not candidates:
+        return []
+    total = {(f.metric, f.fiscal_year): f.value for f in totals}
+    parts: dict[str, dict[str, tuple[VerifiedRow, int, Decimal]]] = {}
+    for mapping in mapper(candidates):
+        text = candidates.get(mapping.page)
+        breakdown = BREAKDOWNS.get(mapping.breakdown)
+        if text is None or breakdown is None:
+            continue
+        row = verify_row(text, mapping.label, mapping.value, mapping.fiscal_year)
+        scale = page_scale(text)
+        if row is None or scale is None:
+            continue
+        name = _FOOTNOTE.sub("", row.label).strip()
+        parts.setdefault(breakdown.key, {}).setdefault(name, (row, mapping.page, scale))
+
+    facts: list[Fact] = []
+    for key, members in parts.items():
+        breakdown = BREAKDOWNS[key]
+        years = set.intersection(*(set(row.years) for row, _, _ in members.values()))
+        sums_match = bool(years) and len(members) >= 2 and all(
+            (breakdown.total, year) in total
+            and sum(row.values[row.years.index(year)] * scale
+                    for row, _, scale in members.values()) == total[(breakdown.total, year)]
+            for year in years
+        )
+        if not sums_match:
+            print(f"Dropped {key} from {source_file}: its parts don't add up to the total.")
+            continue
+        for name, (row, page, scale) in members.items():
+            for year in sorted(years):
+                facts.append(Fact(owner, source_file, key, year,
+                                  row.values[row.years.index(year)] * scale, "USD",
+                                  row.label, page, row.excerpt, name))
+    if facts:
+        kinds = sorted({f.metric for f in facts})
+        print(f"Extracted {len(facts)} breakdown figures from {source_file} ({', '.join(kinds)}).")
+    return facts
+
+
+# ---------------------------------------------------------------------------
 # Storage
 # ---------------------------------------------------------------------------
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS facts (
+CREATE TABLE IF NOT EXISTS figures (
     owner TEXT NOT NULL,
     source_file TEXT NOT NULL,
     metric TEXT NOT NULL,
@@ -453,7 +638,8 @@ CREATE TABLE IF NOT EXISTS facts (
     label TEXT NOT NULL,
     page INTEGER NOT NULL,
     line TEXT NOT NULL,
-    PRIMARY KEY (owner, source_file, metric, fiscal_year)
+    segment TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (owner, source_file, metric, segment, fiscal_year)
 )
 """
 
@@ -462,6 +648,15 @@ def _connect() -> sqlite3.Connection:
     FACTS_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(FACTS_DB)
     conn.execute(_SCHEMA)
+    # Databases from before breakdowns have a "facts" table keyed without a
+    # segment: carry its rows over once, as company totals.
+    legacy = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'facts'"
+    ).fetchone()
+    if legacy:
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO figures SELECT *, '' FROM facts")
+            conn.execute("DROP TABLE facts")
     return conn
 
 
@@ -469,13 +664,13 @@ def replace_facts(owner: str, source_file: str, facts: list[Fact]) -> None:
     """Replace everything stored for one owner's file with `facts`."""
     with _connect() as conn:
         conn.execute(
-            "DELETE FROM facts WHERE owner = ? AND source_file = ?", (owner, source_file)
+            "DELETE FROM figures WHERE owner = ? AND source_file = ?", (owner, source_file)
         )
         conn.executemany(
-            "INSERT INTO facts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO figures VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (f.owner, f.source_file, f.metric, f.fiscal_year, str(f.value), f.unit,
-                 f.label, f.page, f.line)
+                 f.label, f.page, f.line, f.segment)
                 for f in facts
             ],
         )
@@ -486,17 +681,19 @@ def load_facts(owners: list[str], source_file: str | None = None) -> list[Fact]:
     """Facts belonging to any of `owners`, optionally for one file."""
     if not FACTS_DB.exists() or not owners:
         return []
-    query = f"SELECT * FROM facts WHERE owner IN ({','.join('?' * len(owners))})"
+    query = f"SELECT * FROM figures WHERE owner IN ({','.join('?' * len(owners))})"
     params: list = list(owners)
     if source_file is not None:
         query += " AND source_file = ?"
         params.append(source_file)
     with _connect() as conn:
-        rows = conn.execute(query + " ORDER BY source_file, metric, fiscal_year", params).fetchall()
+        rows = conn.execute(
+            query + " ORDER BY source_file, metric, segment, fiscal_year", params
+        ).fetchall()
     conn.close()
     return [
-        Fact(owner, source, metric, year, Decimal(value), unit, label, page, line)
-        for owner, source, metric, year, value, unit, label, page, line in rows
+        Fact(owner, source, metric, year, Decimal(value), unit, label, page, line, segment)
+        for owner, source, metric, year, value, unit, label, page, line, segment in rows
     ]
 
 
@@ -506,7 +703,7 @@ def count_facts(owner: str) -> dict[str, int]:
         return {}
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT source_file, COUNT(*) FROM facts WHERE owner = ? GROUP BY source_file",
+            "SELECT source_file, COUNT(*) FROM figures WHERE owner = ? GROUP BY source_file",
             (owner,),
         ).fetchall()
     conn.close()
@@ -521,6 +718,12 @@ def extract_and_store(pages: dict[int, str], source_file: str, owner: str) -> in
     """
     replace_facts(owner, source_file, [])
     facts = extract_facts(pages, source_file, owner)
+    if facts:
+        try:
+            facts += extract_breakdowns(pages, source_file, owner, facts)
+        except Exception as exc:
+            # Breakdowns are an extra: the statement figures still stand
+            print(f"Warning: breakdown extraction failed for {source_file}: {exc}")
     replace_facts(owner, source_file, facts)
     return len(facts)
 
@@ -536,9 +739,12 @@ def load_pages(pdf_path: Path) -> dict[int, str]:
 def main(argv: list[str]) -> None:
     if argv:
         for path in map(Path, argv):
-            for fact in extract_facts(load_pages(path), path.name, "local"):
-                print(f"{fact.metric:28} FY{fact.fiscal_year}  {fact.value:>20}  "
-                      f"p.{fact.page}  {fact.line}")
+            pages = load_pages(path)
+            facts = extract_facts(pages, path.name, "local")
+            facts += extract_breakdowns(pages, path.name, "local", facts)
+            for fact in facts:
+                print(f"{fact.metric:28} {fact.segment[:24]:24} FY{fact.fiscal_year}  "
+                      f"{fact.value:>20}  p.{page_number(fact.page)}  {fact.line}")
         return
 
     import ingest  # local import: ingest imports this module

@@ -103,6 +103,7 @@ class Figure(BaseModel):
     unit: str
     display: str
     shared: bool = False
+    segment: str = ""       # for breakdowns: the part ("Intelligent Cloud"); "" for totals
 
 
 class Calculation(BaseModel):
@@ -115,6 +116,7 @@ class Calculation(BaseModel):
     formula: str | None     # None for a reported line item
     problem: str | None     # why value is None
     inputs: list[Figure]
+    segment: str = ""       # for breakdowns: the part calculated for
 
 
 class QueryResponse(BaseModel):
@@ -142,9 +144,10 @@ def _figure(fact: financials.Fact, shared: bool = False) -> Figure:
     return Figure(
         source_file=fact.source_file, page=financials.page_number(fact.page), line=fact.line,
         label=fact.label,
-        metric=fact.metric, name=financials.LINE_ITEMS[fact.metric].name,
+        metric=fact.metric, name=financials.ITEM_NAMES[fact.metric],
         fiscal_year=fact.fiscal_year, value=str(fact.value), unit=fact.unit,
         display=analysis.format_value(fact.value, fact.unit), shared=shared,
+        segment=fact.segment,
     )
 
 
@@ -206,6 +209,7 @@ def query_endpoint(request: QueryRequest, owner: str = Depends(current_owner)):
             display=None if r.value is None else analysis.format_value(r.value, s.metric.unit),
             formula=r.formula, problem=r.problem,
             inputs=[_figure(f, shared=f.owner != owner) for f in r.inputs],
+            segment=s.part,
         )
         for s in result.series
         for r in s.results

@@ -88,7 +88,7 @@ carries a visible "Not verified against the excerpts" warning naming each proble
 | `rag.py` | Hybrid retrieval, score-threshold filtering, cross-encoder reranking, prompting. Exposes `query()`. |
 | `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
 | `eval_retrieval.py` | Retrieval benchmark: three pipeline configurations on 72 questions, scored on whether the right passage is retrieved. |
-| `eval_answers.py` | End-to-end benchmark: 27 questions through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
+| `eval_answers.py` | End-to-end benchmark: 31 questions through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
 | `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `GET /documents`, `GET /financials`, `GET /health`. |
 | `app.py` | Streamlit chat UI with expandable source citations and a sidebar for uploading PDFs. |
 | `evaluate.py` | RAGAs evaluation (faithfulness, answer relevancy) with a before/after comparison table. |
@@ -129,8 +129,27 @@ Only then are the values read, for every year column, from the PDF text itself. 
 scaled by the statement's own "(In millions, except per share amounts)" note (amounts are
 rejected if the page states no scale), and outflows printed in parentheses are stored as
 positive amounts. Every figure keeps its file, page and row as printed. On Microsoft's
-FY2024 10-K this yields 59 figures (all 22 line items, two or three years each), with
-every mapping verified.
+FY2024 10-K this yields 56-59 figures (21-22 line items, two or three years each), with
+every mapping verified. Which items the model maps can vary a little between runs. For
+example, "Diluted 7,469", which wraps under its heading, is sometimes skipped. A skipped
+item is reported as missing, never guessed.
+
+**Breakdowns.** Totals are also broken down from the notes, extracted the same way:
+- revenue and operating income by reportable segment;
+- revenue by geography;
+- revenue by product or service line.
+
+The model points at each part's row. Code verifies the row, then keeps a breakdown only if
+its parts add up exactly to the verified company total for every year. A wrong table
+(long-lived assets by country, say), a missing part, or a row taken from the wrong block
+breaks the sum, and the whole breakdown is dropped. Rows that PDF extraction splits across
+lines ("Gaming 21,503", then "15,466", then "16,230") are rejoined first. Microsoft's 10-K
+yields 54 breakdown figures:
+- 3 segments for revenue and operating income;
+- the United States and other countries;
+- 10 product lines;
+
+all three fiscal years each.
 
 **2. Calculation (`analysis.py`).** Pure Python with `Decimal` arithmetic: no model, no
 floating-point rounding until display. Results carry their inputs, and inputs carry their
@@ -142,6 +161,7 @@ citations.
 | Margins | gross margin (falls back to (revenue − cost of revenue) ÷ revenue), operating margin, net margin, R&D intensity, free cash flow margin, effective tax rate |
 | Ratios and returns | current ratio, long-term debt to equity, total liabilities to equity, return on equity, return on assets, dividend payout ratio |
 | Derived amounts | free cash flow |
+| Parts of the company | segment revenue, segment operating income, segment operating margin, revenue by geography, revenue by product or service line |
 | Over time | year-over-year change for any metric (percentage change for amounts, percentage points for margins), compound annual growth over multi-year spans |
 
 If an input is missing for a year, the answer says which one instead of producing a number.
@@ -151,22 +171,30 @@ Return on equity and return on assets use year-end balances; their formulas say 
 (constrained to the catalog above), which fiscal years, which filing. If the plan names a
 metric, the engine computes and code writes the answer from a template. Otherwise, or if
 nothing in the plan can be computed (with the reason stated first), the question goes to
-text retrieval. "Why did operating margin improve?" and segment questions ("How fast did
-Azure grow?") go to retrieval: they're explanations or figures outside the statements.
+text retrieval. "Why did operating margin improve?" goes to retrieval: it asks for an
+explanation, not a figure.
 
 The planner also copies any **qualifier** out of the question: a segment or product
 ("Intelligent Cloud revenue"), a geography, a quarter, an adjusted measure, or a different
-version of an item ("dividends *declared*", when the engine has dividends *paid*). Code
-sends any qualified question to text retrieval, because the engine only holds company-wide
-annual figures. Before this, the end-to-end evaluation caught "Intelligent Cloud revenue",
+version of an item ("dividends *declared*", when the engine has dividends *paid*). Code,
+not the model, decides what happens next (`router.breakdown_plan`):
+- A qualifier naming a part the filing breaks out is calculated from that breakdown. A part
+  matches when every distinctive word of the qualifier is in its name, so "Intelligent
+  Cloud", "the cloud segment", "United States" and "Dynamics" all work.
+- Anything else goes to text retrieval: "Azure", "Microsoft Cloud", "Q4", "adjusted",
+  "declared", or a qualifier that matches more than two parts. The engine has no figure
+  for any of those.
+
+Before qualifiers existed, the end-to-end evaluation caught "Intelligent Cloud revenue",
 "LinkedIn revenue" and "dividends declared" being answered with total revenue and
 dividends paid, each under the "nothing is estimated" footer.
 
 Routing is the one model-dependent step, so it has its own opt-in test
-(`tests/test_planner_live.py`). It passes 41 of 41 cases, three runs in a row:
+(`tests/test_planner_live.py`). It passes 47 of 47 cases, three runs in a row:
 - the 20 routing questions;
 - 11 on which filing a question is about;
-- 10 on qualifiers.
+- 12 on qualifiers;
+- 4 on planning segment questions.
 
 Figures are stored in `chroma_db/financials.sqlite3`, scoped by owner exactly like the
 text chunks: users see their own filings' figures and the shared samples', never another
@@ -535,7 +563,7 @@ Three evaluations, each answering a different question:
 python eval_answers.py
 ```
 
-Runs 27 questions through `router.answer` exactly as the API does: follow-up rewriting,
+Runs 31 questions through `router.answer` exactly as the API does: follow-up rewriting,
 planning, filing choice, calculation or retrieval, reranking and the answer check. It
 scores the final answers against figures checked by hand in Microsoft's FY2024 10-K:
 - **correct:** every expected figure is in the answer, and nothing that mustn't be;
@@ -545,7 +573,10 @@ scores the final answers against figures checked by hand in Microsoft's FY2024 1
 
 The groups:
 - 10 calculations;
-- 11 text lookups, including segments and a "dividends declared" trap;
+- 5 on parts of the company: segment revenue and operating margin, US revenue, product
+  revenue, and growth;
+- 10 text lookups, including "Microsoft Cloud revenue" (not a breakdown part) and a
+  "dividends declared" trap;
 - 4 follow-ups with conversation history;
 - 2 that should be refused: Apple's revenue, and Microsoft's FY2030 revenue.
 
@@ -553,8 +584,9 @@ It also reports latency, gpt-4o-mini tokens and an estimated cost per question.
 
 | | Correct | Route | Verified | Cited |
 | --- | --- | --- | --- | --- |
-| First run | 22/27 | 24/27 | 27/27 | 27/27 |
-| After the fixes below (two runs) | **27/27** | **27/27** | **27/27** | **27/27** |
+| First run (27 questions) | 22/27 | 24/27 | 27/27 | 27/27 |
+| After the fixes below (two runs) | 27/27 | 27/27 | 27/27 | 27/27 |
+| With breakdowns, 31 questions (two runs) | **31/31** | **31/31** | **31/31** | **31/31** |
 
 What the first run caught, all answered confidently as calculations:
 - "Intelligent Cloud revenue", "LinkedIn revenue" and the follow-up "And Dynamics?" were
@@ -741,10 +773,12 @@ label, to keep it open. PRs that change workflow files are left to merge by hand
 - Page numbers in citations count from 1, as PDF viewers and the filings' printed page
   footers do ("p.67" is the 67th page of the PDF). They're stored as 0-based indexes and
   converted for display (`financials.page_number`), so no re-ingest is needed.
-- The analysis engine reads the three primary statements only. Figures that appear only in
-  notes or MD&A (segment revenue, for example) are answered by text retrieval, which won't
-  calculate. Amounts are assumed to be in US dollars, as in SEC filings, and a statement
-  page must state its scale ("in millions") and a year header for its figures to be used.
+- The analysis engine reads the three primary statements, plus breakdowns of revenue and
+  operating income that add up to the company totals. Other figures in the notes or
+  MD&A, such as Microsoft Cloud revenue or debt maturities, are answered by text
+  retrieval, which won't calculate. Amounts are assumed to be in US dollars, as in SEC
+  filings, and a page must state its scale ("in millions") and a year header for its
+  figures to be used.
 - Signed-in users can upload and query without limits yet, and each upload and question
   spends your OpenAI credits. Set a monthly spending cap in your OpenAI account before
   sharing the app widely.

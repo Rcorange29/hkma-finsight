@@ -38,7 +38,8 @@ CASES = {
     "How leveraged is the balance sheet (long-term debt to equity)?":
         ("calculation", {"debt_to_equity"}, [], None),
     "Why did operating margin improve?": ("text", None, None, None),
-    "How fast did Azure grow?": ("text", None, None, None),
+    # Planned either way: Azure is a qualifier no filing part matches, so code sends it to text
+    "How fast did Azure grow?": (None, None, None, None),
     "What are the main risk factors related to AI?": ("text", None, None, None),
     "Who is the CEO?": ("text", None, None, None),
     "What does the company say about its revenue recognition policy?": ("text", None, None, None),
@@ -50,7 +51,8 @@ CASES = {
 def test_planner_routes_question(question):
     route, metrics, years, yoy = CASES[question]
     plan = router.plan_question(question)
-    assert plan.route == route
+    if route is not None:
+        assert plan.route == route
     if route == "calculation":
         assert plan.qualifier is None    # a qualifier would send it to text
     if metrics is not None:
@@ -67,7 +69,7 @@ WHICH_FILING = {
     "What was Microsoft's operating margin in 2024?": ("calculation", "msft.pdf"),
     "How did Acme Holdings' revenue change from 2023?": ("calculation", "acme-10k.pdf"),
     "Who is Microsoft's auditor?": ("text", "msft.pdf"),
-    "How fast did Azure grow?": ("text", "msft.pdf"),          # a product names its company
+    "How fast did Azure grow?": (None, "msft.pdf"),            # a product names its company
     "What was net income in fiscal 2024?": ("calculation", None),
     "What are the main risk factors?": ("text", None),
     "What was Apple's revenue?": (None, None),                 # not listed: answered as unavailable
@@ -103,7 +105,27 @@ QUALIFIED = {
     "What was Microsoft's net income?": False,          # a company isn't a qualifier
     "What was free cash flow in 2024?": False,
     "What were dividends paid in fiscal 2024?": False,
+    "How fast did Azure grow?": True,
+    "What was the Intelligent Cloud operating margin?": True,
 }
+
+
+# Segment questions are planned as calculations, with the part as the qualifier
+SEGMENT_PLANS = {
+    "What was Intelligent Cloud revenue in fiscal 2024?": ({"revenue"}, "intelligent cloud"),
+    "What was the Intelligent Cloud operating margin?": ({"operating_margin"}, "intelligent cloud"),
+    "How much revenue came from the United States in fiscal 2024?": ({"revenue"}, "united states"),
+    "How did Gaming revenue change from 2023 to 2024?": ({"revenue"}, "gaming"),
+}
+
+
+@pytest.mark.parametrize("question", list(SEGMENT_PLANS))
+def test_planner_plans_segment_questions_as_calculations(question):
+    metrics, part = SEGMENT_PLANS[question]
+    plan = router.plan_question(question)
+    assert plan.route == "calculation", plan
+    assert set(plan.metrics) == metrics, plan
+    assert part in (plan.qualifier or "").lower(), plan
 
 
 @pytest.mark.parametrize("question", list(QUALIFIED))
