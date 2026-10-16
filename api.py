@@ -24,9 +24,10 @@ import re
 import tempfile
 import threading
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pypdf.errors import PdfReadError
 
 import analysis
@@ -51,11 +52,19 @@ app = FastAPI(
 )
 
 
+class Turn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=20_000)
+
+
 class QueryRequest(BaseModel):
     question: str
     # Ask about this one filing only (a name from GET /documents). Without it, the
     # question's own wording decides: naming a company narrows to its filing.
     source_file: str | None = None
+    # Earlier turns of the chat, oldest first, so a follow-up ("and in 2023?") can
+    # be read in context. Only the last few are used.
+    history: list[Turn] = Field(default=[], max_length=50)
 
 
 class RetrievalTrace(BaseModel):
@@ -114,6 +123,7 @@ class QueryResponse(BaseModel):
     route: str = "text"     # "calculation" or "text"
     calculations: list[Calculation] = []
     filing: str | None = None   # the one filing the answer was drawn from, if narrowed
+    question: str = ""          # the question as answered: a follow-up made standalone
 
 
 class DocumentInfo(BaseModel):
@@ -177,7 +187,10 @@ def query_endpoint(request: QueryRequest, owner: str = Depends(current_owner)):
     if not request.question.strip():
         raise HTTPException(status_code=422, detail="Question must not be empty.")
     try:
-        result = router.answer(request.question, owner, request.source_file)
+        result = router.answer(
+            request.question, owner, request.source_file,
+            history=[(turn.role, turn.content) for turn in request.history],
+        )
     except router.UnknownFiling as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -203,6 +216,7 @@ def query_endpoint(request: QueryRequest, owner: str = Depends(current_owner)):
         route=result.route,
         calculations=calculations,
         filing=result.filing,
+        question=result.question or request.question,
     )
 
 

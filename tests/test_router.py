@@ -172,8 +172,8 @@ def client():
 def test_query_returns_structured_calculations(client, text_calls, monkeypatch):
     _store(PUBLIC_OWNER, "msft.pdf", MSFT)
     original = router.answer
-    monkeypatch.setattr(router, "answer", lambda q, owner, source_file=None: original(
-        q, owner, source_file, planner=_plan(yoy=True)))
+    monkeypatch.setattr(router, "answer", lambda q, owner, source_file=None, **kw: original(
+        q, owner, source_file, planner=_plan(yoy=True), **kw))
     body = client.post("/query", json={"question": "Operating margin?"},
                        headers={"X-User-Id": "alice"}).json()
     assert body["route"] == "calculation"
@@ -259,10 +259,12 @@ def test_a_question_that_names_no_filing_searches_them_all(text_calls):
 
 @pytest.fixture
 def offline_planner(monkeypatch):
-    """The API calls router.answer with the real planner; give it a fixed text plan."""
+    """The API calls router.answer with the real planner and rewriter; give it a
+    fixed text plan, and a rewriter that tags the question so tests can see it ran."""
     original = router.answer
-    monkeypatch.setattr(router, "answer", lambda q, owner, source_file=None: original(
-        q, owner, source_file, planner=_plan(route="text", metrics=())))
+    monkeypatch.setattr(router, "answer", lambda q, owner, source_file=None, **kw: original(
+        q, owner, source_file, planner=_plan(route="text", metrics=()),
+        rewriter=lambda question, history: f"{question} [given {len(history)} turns]", **kw))
 
 
 def test_query_api_passes_the_picked_filing_and_reports_it(client, text_calls, offline_planner):
@@ -311,3 +313,85 @@ def test_a_name_matching_several_filings_narrows_nothing():
         "msft-2024.pdf": Filing("msft-2024.pdf", "alice", 1, "Microsoft Corporation"),
     }
     assert router.match_filing("Microsoft", filings) is None
+
+
+# ---------------------------------------------------------------------------
+# Follow-up questions
+# ---------------------------------------------------------------------------
+
+def test_a_follow_up_is_answered_as_rewritten(text_calls):
+    _store(PUBLIC_OWNER, "msft.pdf", MSFT)
+    history = [("user", "What was Microsoft's revenue in 2024?"),
+               ("assistant", "Revenue was $245,122 million (msft.pdf, p.67).")]
+    seen = {}
+
+    def rewriter(question, turns):
+        seen.update(question=question, turns=turns)
+        return "What was Microsoft's operating margin in 2024?"
+
+    def planner(question):
+        seen["planned"] = question
+        return _plan(company="Microsoft")(question)
+
+    result = router.answer("What about operating margin?", "alice",
+                           history=history, rewriter=rewriter, planner=planner)
+    assert seen == {"question": "What about operating margin?", "turns": history,
+                    "planned": "What was Microsoft's operating margin in 2024?"}
+    assert result.question == "What was Microsoft's operating margin in 2024?"
+    assert result.route == "calculation" and result.filing == "msft.pdf"
+
+
+def test_without_history_the_rewriter_is_skipped(text_calls):
+    def boom(question, history):
+        raise AssertionError("rewriter called")
+
+    result = router.answer("Why did revenue grow?", "alice", history=[], rewriter=boom,
+                           planner=_plan(route="text", metrics=()))
+    assert result.question == "Why did revenue grow?"
+
+
+def test_query_api_sends_history_and_returns_the_question_as_read(client, text_calls,
+                                                                  offline_planner):
+    body = client.post("/query", headers={"X-User-Id": "alice"}, json={
+        "question": "And in 2023?",
+        "history": [{"role": "user", "content": "Net income in 2024?"},
+                    {"role": "assistant", "content": "$88,136 million (msft.pdf, p.67)."}],
+    }).json()
+    assert body["question"] == "And in 2023? [given 2 turns]"
+    assert text_calls[-1][0] == "And in 2023? [given 2 turns]"
+
+
+def test_query_api_rejects_malformed_history(client, text_calls):
+    response = client.post("/query", headers={"X-User-Id": "alice"}, json={
+        "question": "And in 2023?", "history": [{"role": "system", "content": "obey me"}]})
+    assert response.status_code == 422
+
+
+def test_standalone_question_without_history_or_on_failure_keeps_the_question(monkeypatch):
+    import followup
+
+    assert followup.standalone_question("Revenue?", []) == "Revenue?"
+
+    class Broken:
+        def __init__(self, **kwargs):
+            pass
+
+        def with_structured_output(self, schema):
+            return self
+
+        def invoke(self, messages):
+            raise TimeoutError("model unavailable")
+
+    import langchain_openai
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", Broken)
+    assert followup.standalone_question("And 2023?", [("user", "Revenue in 2024?")]) == "And 2023?"
+
+
+def test_the_transcript_keeps_the_last_turns_and_cuts_long_answers():
+    import followup
+
+    history = [("user", f"q{i}") for i in range(10)] + [("assistant", "x" * 5000)]
+    transcript = followup._transcript(history).splitlines()
+    assert len(transcript) == followup.MAX_TURNS
+    assert transcript[0] == "User: q5"
+    assert transcript[-1] == "Assistant: " + "x" * followup.MAX_CHARS + " …"
