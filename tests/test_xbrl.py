@@ -334,3 +334,33 @@ def test_user_agent_needs_a_contact_address(monkeypatch, value):
     monkeypatch.setenv("SEC_USER_AGENT", value)
     with pytest.raises(edgar.EdgarUnavailable):
         edgar.user_agent()
+
+
+def test_the_latest_filing_reports_a_restated_year():
+    # Target's FY2022 cost of sales: $82,229M first, restated to $82,306M a year later
+    target = {"facts": {"us-gaap": {"CostOfGoodsAndServicesSold": {"units": {"USD": [
+        _target("tgt-2024", 2023, "2023-01-29", "2024-02-03", 77736000000),
+        _target("tgt-2024", 2023, "2022-01-30", "2023-01-28", 82229000000),
+        _target("tgt-2025", 2024, "2024-02-04", "2025-02-01", 76502000000),
+        _target("tgt-2025", 2024, "2022-01-30", "2023-01-28", 82306000000),
+    ]}}}}}
+    for row in target["facts"]["us-gaap"]["CostOfGoodsAndServicesSold"]["units"]["USD"]:
+        row["filed"] = "2024-03-13" if row["accn"] == "tgt-2024" else "2025-03-12"
+    both = {"tgt-2024", "tgt-2025"}
+    assert xbrl.latest_value(target, "cost_of_revenue", 2022, both) == Decimal(82306000000)
+    assert xbrl.latest_value(target, "cost_of_revenue", 2022, {"tgt-2024"}) == Decimal(82229000000)
+    assert xbrl.latest_value(target, "cost_of_revenue", 2021, both) is None
+
+
+def test_annual_reports_lists_10ks_newest_first(monkeypatch):
+    recent = {"form": ["10-Q", "10-K", "8-K", "10-K/A", "10-K", "10-K"],
+              "primaryDocument": ["q.htm", "k26.htm", "e.htm", "a.htm", "k25.htm", "k24.pdf"],
+              "accessionNumber": ["1", "2", "3", "4", "5", "6"],
+              "reportDate": ["2026-09-30", "2026-06-30", "", "2025-06-30", "2025-06-30",
+                             "2024-06-30"],
+              "filingDate": ["x"] * 6}
+    monkeypatch.setattr(edgar, "submissions",
+                        lambda cik: {"name": "MICROSOFT CORP", "filings": {"recent": recent}})
+    assert [r.document for r in edgar.annual_reports(789019)] == ["k26.htm", "k25.htm"]
+    assert [r.document for r in edgar.annual_reports(789019, 1)] == ["k26.htm"]
+    assert edgar.latest_annual_report(789019).report_date == "2026-06-30"

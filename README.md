@@ -408,6 +408,14 @@ two companies' passages, and the model would have to guess which figure to give.
 - **Or pick one.** The sidebar's **Ask about** picker (`source_file` in `POST /query`)
   limits every answer to one filing, whatever the question says. A user's own file shadows
   a sample of the same name, and a filing the caller can't see is refused with `404`.
+- **One company's filings make one history.** Filings whose cover pages name the same
+  company ("Microsoft Corporation", "MICROSOFT CORP") are merged: two 10-Ks give four or
+  five years of figures, so "Microsoft's revenue from 2022 to 2026" and its growth are
+  calculated across them. Where filings overlap, the newer one (the later fiscal year)
+  wins, so a restatement replaces what was first reported, and the answer says so:
+  `Restated: Cost of revenue FY2022 is $82,306 million in tgt-10k-2025-02-01.htm, the
+  newer filing; tgt-10k-2024-02-03.htm reported $82,229 million.` Every figure still
+  cites its own filing and page.
 - **Several filings, one answer.** When a question names no company, every filing is
   searched. The prompt then requires the model to answer for each filing separately under
   its company name and never merge figures across filings. Each excerpt's Source line
@@ -813,8 +821,9 @@ than the token count suggests.
 ### Any company, checked against XBRL
 
 ```bash
-python -m financial_rag.eval_xbrl                  # AAPL MSFT NVDA GOOGL KO JNJ
+python -m financial_rag.eval_xbrl                  # ten companies, below
 python -m financial_rag.eval_xbrl WMT JPM          # any tickers
+python -m financial_rag.eval_xbrl --history 3 MSFT # five years from three 10-Ks
 ```
 
 `eval_answers.py` needs every expected answer checked by hand, so it covers two filings.
@@ -848,6 +857,32 @@ check is why none of them became a wrong number:
   statement.
 - **Johnson & Johnson net income.** "Net earnings" and "Net earnings from continuing
   operations" tied in verification, so neither was used.
+
+These were fixed (58/58). Then four harder companies, now among the defaults, scored
+13/28: JPMorgan (a bank), Travelers (an insurer), Realty Income (a REIT) and Target (a
+retailer whose 52/53-week year ends in January). The fixes:
+- **Target's years.** Target calls the year to January 31, 2026 "fiscal 2025". Years are
+  now named as each 10-K's own XBRL names them, and a balance sheet dated a year after
+  the year it closes is relabelled to match.
+- **Statement pages.** Target's "(millions)" scale note; a Travelers data row that names
+  the income statement; Realty Income's "Statements of Income and Comprehensive Income".
+- **Substituted rows.** Asked for a line item a bank or insurer doesn't report, the model
+  pointed at a neighbour ("Total assets" for current assets). Each line item now has a
+  pattern its printed label must fit.
+- **Re-reading a contradicted figure** from the one row that prints XBRL's values, such as
+  Realty Income's net income attributable to the company.
+- **Banks' own line items:** net interest income, noninterest revenue and expense, the
+  provision for credit losses, and the efficiency ratio.
+
+All ten defaults now score **91/91**.
+
+**History.** With `--history N` each company's latest N 10-Ks are indexed, and the
+questions cover every year they report between them (N + 2 years of income): revenue,
+cost of revenue and net income year by year, then compound revenue growth across the
+span. Filings overlap, so a year's expected value is what the most recently filed of
+them reports. `--history 3` on Microsoft, Apple, Target and Coca-Cola: **64/64**,
+including Target's restated FY2022 cost of sales ($82,306 million, not the $82,229
+million first reported).
 
 ### Answer faithfulness (RAGAs, optional)
 
