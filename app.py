@@ -85,6 +85,8 @@ def _found_by(retrieval: dict | None) -> str:
     line = " + ".join(retrieval.get("matched_by", [])) + " match"
     if retrieval.get("matched_terms"):
         line += " · terms: " + ", ".join(retrieval["matched_terms"])
+    if retrieval.get("llm_rank"):
+        line += f" · reranked #{retrieval['llm_rank']} by LLM"
     return line
 
 

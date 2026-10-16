@@ -371,3 +371,83 @@ def test_company_is_read_from_the_cover_page_at_ingest(store, tmp_path, monkeypa
     metas = ingest.open_vectorstore().get(include=["metadatas"])["metadatas"]
     assert {m["company"] for m in metas} == {"Acme Holdings, Inc."}
     assert ingest.filings([ALICE]) == [ingest.Filing("acme.pdf", ALICE, 2, "Acme Holdings, Inc.")]
+
+
+# ---------------------------------------------------------------------------
+# LLM reranking (the model is faked)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def three_chunks(keyword_only, tmp_path, monkeypatch):
+    _fake_pdf(monkeypatch, ["revenue alpha", "revenue beta", "revenue gamma 57,582"])
+    ingest.ingest_file(tmp_path / "acme.pdf", ALICE)
+    return ingest.open_vectorstore()
+
+
+def _pages(found):
+    return [d.metadata["page"] for d in found]
+
+
+@pytest.mark.filterwarnings("ignore:Relevance scores must be between 0 and 1")
+def test_the_llm_sets_the_order_of_what_it_ranks(three_chunks, monkeypatch):
+    monkeypatch.setattr(rag, "RERANKER", "llm")
+    seen = {}
+
+    def fake_rank(question, docs):
+        seen["pages"] = [d.metadata["page"] for d in docs]
+        return [docs.index(next(d for d in docs if d.metadata["page"] == 1))]
+
+    monkeypatch.setattr(rag, "llm_rank", fake_rank)
+    found = rag.retrieve_and_rerank("revenue", three_chunks, ALICE)
+    assert sorted(seen["pages"]) == [0, 1, 2]
+    # The LLM's pick first, then the rest in cross-encoder order
+    assert _pages(found)[0] == 1
+    assert sorted(_pages(found)) == [0, 1, 2]
+    traces = [d.metadata["retrieval"] for d in found]
+    assert [t["reranker"] for t in traces] == ["llm"] * 3
+    assert [t.get("llm_rank") for t in traces] == [1, None, None]
+
+
+@pytest.mark.filterwarnings("ignore:Relevance scores must be between 0 and 1")
+def test_exact_value_matches_still_come_first(three_chunks, monkeypatch):
+    monkeypatch.setattr(rag, "RERANKER", "llm")
+    monkeypatch.setattr(rag, "llm_rank", lambda q, docs: list(range(len(docs)))[::-1])
+    found = rag.retrieve_and_rerank("revenue 57,582", three_chunks, ALICE)
+    assert _pages(found)[0] == 2
+    assert found[0].metadata["retrieval"]["exact_value_match"] is True
+
+
+@pytest.mark.filterwarnings("ignore:Relevance scores must be between 0 and 1")
+def test_a_failed_llm_call_falls_back_to_the_cross_encoder(three_chunks, monkeypatch):
+    monkeypatch.setattr(rag, "RERANKER", "llm")
+
+    def broken(question, docs):
+        raise TimeoutError("model unavailable")
+
+    monkeypatch.setattr(rag, "llm_rank", broken)
+    found = rag.retrieve_and_rerank("revenue", three_chunks, ALICE)
+    assert len(found) == 3
+    assert {d.metadata["retrieval"]["reranker"] for d in found} == {"cross-encoder"}
+    assert all("llm_rank" not in d.metadata["retrieval"] for d in found)
+
+
+def test_llm_rank_keeps_valid_unique_positions(monkeypatch):
+    prompts = []
+
+    class FakeChat:
+        def __init__(self, **kwargs):
+            pass
+
+        def with_structured_output(self, schema):
+            return self
+
+        def invoke(self, prompt):
+            prompts.append(prompt)
+            return rag._PassageRanking(ranking=[3, 3, 9, 1, 0])
+
+    monkeypatch.setattr(rag, "ChatOpenAI", FakeChat)
+    docs = [Document(page_content=f"text {i}", metadata={"source_file": "a.pdf", "page": i})
+            for i in range(3)]
+    assert rag.llm_rank("q?", docs) == [2, 0]
+    assert "Question: q?" in prompts[0]
+    assert "[1] Source: a.pdf, Page: 0\ntext 0" in prompts[0]

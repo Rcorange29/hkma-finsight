@@ -9,14 +9,15 @@ an answer with page-level citations, refusing to guess when the figure isn't in 
 documents.
 
 Built with LangChain, ChromaDB, OpenAI (`gpt-4o-mini` + `text-embedding-3-small`),
-hybrid semantic + BM25 keyword search, a cross-encoder reranker, FastAPI and Streamlit.
+hybrid semantic + BM25 keyword search, two-stage reranking (cross-encoder, then
+gpt-4o-mini), FastAPI and Streamlit.
 
 ---
 
 ## Why it doesn't hallucinate numbers
 
 Financial Q&A fails in a specific way: the model quietly derives a figure that never
-appears in the filing. Four parts of the pipeline are aimed at that.
+appears in the filing. Five parts of the pipeline are aimed at that.
 
 **Calculations never touch the model.** "What was the operating margin, and how did it
 change?" is arithmetic over specific line items, not a retrieval problem. At ingest, the
@@ -34,15 +35,27 @@ then restores them after splitting.
 question but blur exact tokens: fiscal years, line-item labels, precise values. So two
 searches run side by side: semantic (20 candidates above a relevance floor) and BM25
 keyword search (20 more) that treats "245,122", "$245,122" and "245122" as one token and
-"FY24" as "fiscal 2024". Their rankings are fused, `cross-encoder/ms-marco-MiniLM-L-6-v2`
-reranks the union, and only the top 5 go to the LLM. Every citation records how its chunk
-was found. If neither search finds anything, the API says so instead of answering from
+"FY24" as "fiscal 2024". Their rankings are fused, a cross-encoder and then gpt-4o-mini
+rerank the union, and only the top 5 go to the answering model. Every citation records
+how its chunk was found. If neither search finds anything, the API says so instead of answering from
 parametric memory. See [Hybrid retrieval](#hybrid-retrieval).
 
 **A prompt that forbids arithmetic.** For questions that go to text retrieval, the system
 prompt allows only figures that appear verbatim in the retrieved excerpts — no computing, deriving, or combining rows — and
 requires a `(file.pdf, p.NN)` citation after each claim. Anything missing comes back as
 "not found in context".
+
+**…and code that checks the answer anyway.** The prompt isn't enough on its own. Asked
+for Activision Blizzard's goodwill, gpt-4o-mini was given "Goodwill 50,969" (p.89) and
+"$51.0 billion" (p.93), and answered "$51,969 million (p.92)" five times out of five: a
+blend of the two, cited to a page that holds neither. So `rag.check_answer` compares every
+text answer against its excerpts before it is returned:
+- every comma-grouped or decimal figure must be printed on the page cited right after it;
+- every citation must name a retrieved page, by its index or its 1-based label.
+
+If the check fails, the model is asked once more with the problems spelled out. That
+fixed the goodwill answer to "$51.0 billion (p.94)". If the retry fails too, the answer
+carries a visible "Not verified against the excerpts" warning naming each problem.
 
 ---
 
@@ -59,7 +72,7 @@ requires a `(file.pdf, p.NN)` citation after each claim. Anything missing comes 
                    │                 └─► answer with every input cited (page + row)
                    │
                    └─ other ───► semantic search (k=20) + BM25 keyword search (k=20)
-                                    ─► rank fusion ─► cross-encoder rerank (top 5)
+                                    ─► rank fusion ─► cross-encoder ─► LLM rerank (top 5)
                                     ─► gpt-4o-mini + strict prompt ─► answer + citations
 
                           api.py (FastAPI :8000) ◄── app.py (Streamlit :8501)
@@ -73,7 +86,7 @@ requires a `(file.pdf, p.NN)` citation after each claim. Anything missing comes 
 | `router.py` | Plans each question, narrows it to the filing it names, and sends it to the analysis engine or to text retrieval. |
 | `rag.py` | Hybrid retrieval, score-threshold filtering, cross-encoder reranking, prompting. Exposes `query()`. |
 | `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
-| `eval_retrieval.py` | Retrieval benchmark: semantic-only vs hybrid, scored on whether the right figure is retrieved. |
+| `eval_retrieval.py` | Retrieval benchmark: three pipeline configurations on 72 questions, scored on whether the right passage is retrieved. |
 | `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `GET /documents`, `GET /financials`, `GET /health`. |
 | `app.py` | Streamlit chat UI with expandable source citations and a sidebar for uploading PDFs. |
 | `evaluate.py` | RAGAs evaluation (faithfulness, answer relevancy) with a before/after comparison table. |
@@ -178,15 +191,21 @@ searches over the same chunks and combines them.
    fusion. The keyword ranking weighs more when the question quotes a value (2.0), the
    same as semantic when it names a year (1.0), and less for purely conceptual questions
    (0.75).
-4. **Rerank.** The cross-encoder scores the top 30 fused candidates. When the question
-   quotes exact values, chunks containing all of them go first, because the cross-encoder
-   is weak at matching numbers. The top 5 go to the LLM.
+4. **Rerank, in two stages.** The cross-encoder scores the top 30 fused candidates.
+   Then gpt-4o-mini orders the cross-encoder's top 15: it reads statements, line items
+   and fiscal years far better than the small cross-encoder, which was trained on web
+   search. The rest keep the cross-encoder's order after the LLM's picks. If the LLM call
+   fails or times out, the cross-encoder's order is used. Either way, when the question
+   quotes exact values, chunks containing all of them go first. The top 5 go to the
+   answering model. This step costs about 1.3 seconds and $0.002 per question; see
+   [Retrieval benchmark](#retrieval-benchmark) for why it's worth it.
 
 **Provenance.** Every retrieved chunk carries a `retrieval` record, and the API returns it
 with each citation. It says:
 - which search found the chunk (`matched_by`), with each search's rank and score;
 - the query terms it matched;
-- the cross-encoder score;
+- the cross-encoder score, which reranker set the final order (`reranker`), and the
+  LLM's rank for the chunk (`llm_rank`) when it did;
 - whether it contains the quoted values;
 - Chroma's `chunk_id`.
 
@@ -198,6 +217,7 @@ applied by Chroma before any scoring. Term statistics come only from chunks the 
 may see, so one user's filings never influence another's results. Tests cover both.
 
 `HYBRID_SEARCH=0` switches back to the semantic-only pipeline, unchanged from before.
+`RERANKER=cross-encoder` drops the LLM reranking step.
 
 ---
 
@@ -447,7 +467,9 @@ Retrieval behaviour is tuned by the constants at the top of `rag.py`:
 | `RERANK_CANDIDATES` | `30` | Fused candidates the cross-encoder scores. |
 | `TOP_K` | `5` | Chunks sent to the LLM after reranking. |
 | `HYBRID_SEARCH` | env, `1` | Set the `HYBRID_SEARCH` environment variable to `0` for semantic-only retrieval. |
-| `RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder used for reranking. |
+| `RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder used for the first reranking stage. |
+| `RERANKER` | env, `llm` | `llm` has gpt-4o-mini order the cross-encoder's top candidates; `cross-encoder` skips that call. |
+| `LLM_RERANK_CANDIDATES` | `15` | How many of the cross-encoder's top candidates the LLM orders. |
 
 BM25 parameters, fusion weights and the tokenizer live in `hybrid.py`.
 Chunking is configured in `ingest.py` (`CHUNK_SIZE`, `CHUNK_OVERLAP`). Changing either
@@ -509,41 +531,56 @@ Two things to know before reading the numbers:
 ### Retrieval benchmark
 
 ```bash
-python eval_retrieval.py
+python eval_retrieval.py            # about $0.15 of gpt-4o-mini calls
+python eval_retrieval.py --no-llm   # skip the LLM reranking configuration
 ```
 
-Scores retrieval alone, with no LLM calls apart from embedding the questions (well under a
-cent). A question counts as a hit when a retrieved chunk contains its evidence: the
-figure from the ground truth, exactly as the filing prints it. Two question sets:
+Scores retrieval alone. A question counts as a hit when a retrieved chunk contains its
+evidence: the figure or phrase from the ground truth, exactly as the filing prints it. It
+compares three configurations of the pipeline on 72 questions about Microsoft's FY2024
+10-K, in three sets:
 
-- 26 of the `evaluate.py` questions, the ones whose ground truth has a figure or name
-  to look for;
-- 10 exact-term questions, typed the way analysts do: "FY24 additions to property and
-  equipment", "Where does the filing report 245,122?".
+- **`evaluate.py` (26):** the questions whose ground truth has a figure or name to look
+  for.
+- **Exact-term (10):** typed the way analysts do, e.g. "FY24 additions to property and
+  equipment" or "Where does the filing report 245,122?".
+- **More (36):** older fiscal years, other line items, segments, notes and management's
+  discussion. These were written, and each answer checked against the filing text, before
+  any configuration was scored.
 
-| Question set | Pipeline | Hit@1 | Hit@5 (sent to the LLM) | MRR |
-| --- | --- | --- | --- | --- |
-| `evaluate.py` (26) | semantic only | 16 | 24 | 0.738 |
-| | **hybrid** | **17** | **25** | **0.777** |
-| Exact-term (10) | semantic only | 7 | 9 | 0.783 |
-| | **hybrid** | **8** | **10** | **0.883** |
+| Configuration | Ranked first | In the top 5 (sent to the model) | MRR |
+| --- | --- | --- | --- |
+| semantic + cross-encoder (the original pipeline) | 47/72 | 65/72 | 0.750 |
+| hybrid + cross-encoder | 50/72 | 68/72 | 0.790 |
+| **hybrid + LLM rerank (default)** | **66/72** | **72/72** | **0.943** |
 
-Two questions semantic search missed entirely are now answered:
-- the employee count, a narrative passage the embeddings never surfaced;
-- "Where does the filing report 245,122?".
+By set, hybrid + LLM rerank ranks the right passage first on 24/26, 9/10 and 33/36
+questions. The cross-encoder-only configurations manage 16-17/26, 7-8/10 and 24-25/36.
 
-Other ranks moved, but the hit counts barely changed. What these numbers do and don't show:
-- **The cross-encoder is now the bottleneck.** In 4 of the 11 questions where the top chunk
-  is wrong, one of the two searches had ranked the right chunk first. The reranker then
-  demoted it, usually in favour of a related note or the stockholders' equity statement.
-- **Two ideas were tested and dropped.** Feeding the reranker only the matching window of
-  each chunk lost the statement heading and dropped MRR from 0.79 to 0.69. Blending the
-  reranker's ranking with the first-stage ranks didn't help either.
-- **The fusion weights hardly matter at these sizes.** The 30 reranked candidates cover
-  nearly the whole union of the two 20-chunk lists, so the cross-encoder decides the
-  order. The weights only decide which candidates get cut when the union is larger.
-- **This is one filing and 36 questions.** Treat single-question differences as
-  anecdotes.
+What the numbers show:
+- **Hybrid search fixes recall.** It finds passages that semantic search never surfaced,
+  such as the employee count and an exact "245,122" lookup.
+- **The LLM fixes ordering.** With the cross-encoder alone, the right chunk often reached
+  the reranker but was demoted, usually behind a related note or the stockholders' equity
+  statement. gpt-4o-mini, told to prefer the passage that states the exact line item and
+  year, gets those right.
+- **Cost.** The extra step costs one gpt-4o-mini call per question: about 11,000 input
+  tokens (15 chunks), a median of 1.3 seconds, and about $0.002.
+
+Tested and dropped:
+- **`BAAI/bge-reranker-base`** instead of the cross-encoder: 34/72 ranked first, worse
+  than the small cross-encoder. It also took about 27 seconds per question on CPU.
+- **Section labels.** Each chunk was prefixed with its 10-K heading, e.g. "ITEM 8 ›
+  CASH FLOWS STATEMENTS". That made every reranker slightly worse (cross-encoder 50 →
+  44 ranked first) and needs a re-ingest, so it isn't used. The code is kept on the local
+  branch `experiment/section-labels`.
+- **Reranking only the part of each chunk that matched the question.** The reranker lost
+  the statement heading, and MRR fell from 0.79 to 0.69.
+- **Blending the reranker's order with the first-stage ranks.** No gain.
+- **Tuning the fusion weights.** No measurable effect: the 30 reranked candidates cover
+  nearly the whole union of the two 20-chunk searches.
+
+It's one filing and 72 questions, so treat single-question differences as anecdotes.
 
 ---
 
@@ -558,6 +595,12 @@ Tests cover:
 - the chunking logic and prompt formatting;
 - the upload path: validation, staging, replace-on-reupload;
 - hybrid search: the tokenizer, BM25, query profiles, rank fusion and citation excerpts;
+- answer checking: blended figures, real figures cited to the wrong page, citations of
+  pages that weren't retrieved, figures quoted from the question, and the retry and
+  warning;
+- LLM reranking (with the model faked): the LLM's order applied to its candidates, exact
+  value matches still first, fallback to the cross-encoder when the call fails, and
+  parsing of the model's ranking;
 - per-user isolation: user-id validation, and retrieval against a temporary ChromaDB (fake
   embeddings and reranker). Neither the semantic nor the keyword path returns another
   user's chunks, keyword hits carry their provenance, and replaced filings drop out of the
