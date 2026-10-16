@@ -6,7 +6,7 @@ api.py — FastAPI server for the RAG engine.
   GET  /documents   list your filings and the public samples
   GET  /financials  the structured figures extracted from those filings
   GET  /usage       this month's questions and uploads, against your limits
-  POST /filings     fetch a company's latest 10-K from SEC EDGAR by ticker (a job)
+  POST /filings     fetch a company's 10-K from SEC EDGAR by ticker, latest or by year (a job)
   GET  /jobs/{id}   how a fetch is going: queued, running, done or failed
 
 Calculation questions (margins, ratios, growth, year-over-year changes) are
@@ -30,6 +30,7 @@ from __future__ import annotations
 import re
 import tempfile
 import threading
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -38,7 +39,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pypdf.errors import PdfReadError
 
-from financial_rag import analysis, auth, edgar, financials, ingest, jobs, router, usage
+from financial_rag import analysis, auth, edgar, financials, ingest, jobs, router, usage, xbrl
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # a 10-K PDF is typically 1-10 MB
 MAX_UPLOAD_PAGES = 500                # most 10-Ks run 80-300 pages
@@ -347,6 +348,10 @@ _TICKER_RE = re.compile(r"[A-Z][A-Z0-9-]{0,9}")
 
 class FilingRequest(BaseModel):
     ticker: str = Field(min_length=1, max_length=12)
+    # The fiscal year as the company names it (Target's year to January 2026 is
+    # 2025); omitted for the latest 10-K. A company's filings of different years
+    # make one history.
+    fiscal_year: int | None = Field(default=None, ge=1994, le=2100)
 
 
 class JobInfo(BaseModel):
@@ -365,12 +370,31 @@ def _job_info(job: jobs.Job) -> JobInfo:
                    step=job.step, error=job.error, document=document)
 
 
-def _fetch_and_ingest(ticker: str, cik: int, owner: str, step) -> str:
-    """The job: find the latest 10-K, download it, then index it like an upload."""
-    step("Finding the latest 10-K on SEC EDGAR …")
-    filing = edgar.latest_annual_report(cik)
-    if filing is None:
-        raise ValueError(f"{ticker} has no 10-K on SEC EDGAR.")
+def _annual_report(ticker: str, cik: int, fiscal_year: int | None) -> edgar.FilingRef:
+    """The 10-K to fetch: the latest, or the one for `fiscal_year` as the company names
+    its years (from its XBRL; without it, the year of the report date)."""
+    if fiscal_year is None:
+        filing = edgar.latest_annual_report(cik)
+        if filing is None:
+            raise ValueError(f"{ticker} has no 10-K on SEC EDGAR.")
+        return filing
+    try:
+        labels = xbrl.fiscal_year_labels(edgar.companyfacts(cik))
+    except edgar.EdgarUnavailable:
+        labels = {}
+    for filing in edgar.annual_reports(cik):
+        if xbrl.year_name(date.fromisoformat(filing.report_date), labels) == fiscal_year:
+            return filing
+    raise ValueError(f"{ticker} has no 10-K for fiscal {fiscal_year} on SEC EDGAR, which "
+                     "lists about the last ten years.")
+
+
+def _fetch_and_ingest(ticker: str, cik: int, owner: str, step,
+                      fiscal_year: int | None = None) -> str:
+    """The job: find the 10-K, download it, then index it like an upload."""
+    which = f"10-K for fiscal {fiscal_year}" if fiscal_year else "latest 10-K"
+    step(f"Finding the {which} on SEC EDGAR …")
+    filing = _annual_report(ticker, cik, fiscal_year)
     step(f"Downloading {filing.document} (fiscal year ended {filing.report_date}) …")
     html = edgar.fetch_document(filing.url)
 
@@ -408,9 +432,10 @@ def fetch_filing(request: FilingRequest, owner: str = Depends(current_owner)):
         raise HTTPException(status_code=404, detail=f"No SEC filer has the ticker {ticker}.")
     # Counted like an upload; refunded if the job fails
     event = usage.record(owner, usage.UPLOAD)
+    fiscal_year = request.fiscal_year
     job = jobs.submit(
-        owner, "fetch_10k", ticker,
-        work=lambda step: _fetch_and_ingest(ticker, cik, owner, step),
+        owner, "fetch_10k", f"{ticker} FY{fiscal_year}" if fiscal_year else ticker,
+        work=lambda step: _fetch_and_ingest(ticker, cik, owner, step, fiscal_year),
         on_failure=lambda: usage.refund(event),
     )
     return _job_info(job)

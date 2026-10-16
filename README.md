@@ -95,7 +95,7 @@ relative paths.
 | `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
 | `eval_retrieval.py` | Retrieval benchmark: three pipeline configurations on 72 questions, scored on whether the right passage is retrieved. |
 | `eval_answers.py` | End-to-end benchmark: 51 questions on two companies' filings through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
-| `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `POST /filings` (fetch by ticker), `GET /jobs/{id}`, `GET /documents`, `GET /financials`, `GET /usage`, `GET /health`. |
+| `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `POST /filings` (fetch by ticker and year), `GET /jobs/{id}`, `GET /documents`, `GET /financials`, `GET /usage`, `GET /health`. |
 | `usage.py` | Usage limits: questions and uploads per user per month, questions per minute, and a daily cap across all users. |
 | `edgar.py` | SEC EDGAR client: ticker and company lookup, filings, XBRL company facts; identified, rate-limited and cached. |
 | `xbrl.py` | Checks each extracted figure against the company's XBRL data: matches are marked, contradictions dropped. |
@@ -260,17 +260,21 @@ text loses: which cells form a row, and which heading sits over which column.
   2023]`. A PDF chunk that starts mid-balance-sheet can't say which column is 2024; this
   one can.
 
-**Fetch by ticker.** In the sidebar, enter a ticker under "Or fetch a company's latest 10-K"
-(or `POST /filings {"ticker": "AAPL"}`). The API looks the ticker up on EDGAR straight away:
+**Fetch by ticker.** In the sidebar, enter a ticker under "Or fetch a company's 10-K", and
+optionally a fiscal year (or `POST /filings {"ticker": "AAPL", "fiscal_year": 2024}`). The
+API looks the ticker up on EDGAR straight away:
 an unknown ticker gets `404` and nothing is counted. Then it queues a job and answers `202`
 with the job's id. The job:
-1. finds the company's latest 10-K;
+1. finds the company's latest 10-K, or the one for that fiscal year as the company names
+   it (Target's fiscal 2024 is the year to February 1, 2025);
 2. downloads it;
 3. indexes it like an upload, into your own filings, as `aapl-10k-2025-09-27.htm`;
 4. checks its figures against the company's XBRL data, using the CIK from the ticker.
 
 The UI follows `GET /jobs/{id}` and shows each step until it reports the filing's chunks and
 figures. A fetch counts against the monthly upload limit and is refunded if it fails.
+Fetch a company's earlier years too, and its filings merge into one history (see
+[Which filing a question is about](#which-filing-a-question-is-about)).
 
 Jobs run one at a time on a worker thread (`jobs.py`), and their records are kept in
 `chroma_db/jobs.sqlite3`. A job interrupted by a server restart is marked failed, never left
@@ -679,7 +683,8 @@ page (`null` if none was found):
 fiscal year, page and the row as printed: `{"figures": [{"metric": "revenue", …}]}`.
 
 `POST /filings` with `{"ticker": "AAPL"}` fetches the company's latest 10-K from SEC EDGAR
-as a background job: `202` with `{"job_id": …, "state": "queued", …}`. It answers `404` for
+(add `"fiscal_year": 2024` for an earlier one; EDGAR lists about ten years) as a
+background job: `202` with `{"job_id": …, "state": "queued", …}`. It answers `404` for
 an unknown ticker, `422` for a malformed one, `429` over the upload limit, and `503` when
 EDGAR can't be reached or `SEC_USER_AGENT` isn't set. `GET /jobs/{job_id}` reports progress:
 `state` is queued, running, done or failed, `step` says what a running job is doing,

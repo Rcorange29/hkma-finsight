@@ -123,17 +123,21 @@ def _usage_line(counts: dict) -> str:
 FETCH_TIMEOUT = 15 * 60     # seconds: a long 10-K can take several minutes to index
 
 
-def _fetch_filing(ticker: str) -> None:
-    """Ask the API to fetch a 10-K by ticker, then follow the job until it ends."""
+def _fetch_filing(ticker: str, fiscal_year: int | None = None) -> None:
+    """Ask the API to fetch a 10-K by ticker (the latest, or one fiscal year's), then
+    follow the job until it ends."""
     try:
-        response = httpx.post(f"{API_BASE_URL}/filings", json={"ticker": ticker},
+        response = httpx.post(f"{API_BASE_URL}/filings",
+                              json={"ticker": ticker, "fiscal_year": fiscal_year},
                               headers=HEADERS, timeout=30.0)
         response.raise_for_status()
         job = response.json()
     except Exception as exc:
         st.error(f"{ticker}: {_error_detail(exc)}")
         return
-    with st.status(f"Fetching {job['subject']}'s latest 10-K …", expanded=True) as status:
+    which = f"{ticker.upper()}'s FY{fiscal_year} 10-K" if fiscal_year else \
+        f"{job['subject']}'s latest 10-K"
+    with st.status(f"Fetching {which} …", expanded=True) as status:
         shown = ""
         deadline = time.time() + FETCH_TIMEOUT
         while job["state"] not in ("done", "failed") and time.time() < deadline:
@@ -246,11 +250,16 @@ with st.sidebar:
                     st.error(f"{upload.name}: {_error_detail(exc)}")
 
     with st.form("fetch", clear_on_submit=True):
-        ticker = st.text_input("Or fetch a company's latest 10-K", placeholder="Ticker, e.g. AAPL",
+        ticker = st.text_input("Or fetch a company's 10-K", placeholder="Ticker, e.g. AAPL",
                                max_chars=12)
+        year = st.number_input(
+            "Fiscal year", value=None, min_value=1994, max_value=2100, step=1,
+            placeholder="Latest",
+            help="Blank for the latest 10-K. Fetch earlier years too, and questions about "
+                 "the company draw on all of them: a longer history, restatements included.")
         fetch = st.form_submit_button("Fetch from SEC EDGAR")
     if fetch and ticker.strip():
-        _fetch_filing(ticker.strip())
+        _fetch_filing(ticker.strip(), int(year) if year else None)
 
     try:
         response = httpx.get(f"{API_BASE_URL}/documents", headers=HEADERS, timeout=10.0)
