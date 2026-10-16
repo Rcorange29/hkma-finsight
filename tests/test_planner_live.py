@@ -51,6 +51,8 @@ def test_planner_routes_question(question):
     route, metrics, years, yoy = CASES[question]
     plan = router.plan_question(question)
     assert plan.route == route
+    if route == "calculation":
+        assert plan.qualifier is None    # a qualifier would send it to text
     if metrics is not None:
         assert set(plan.metrics) == metrics
     if years is not None:
@@ -68,7 +70,11 @@ WHICH_FILING = {
     "How fast did Azure grow?": ("text", "msft.pdf"),          # a product names its company
     "What was net income in fiscal 2024?": ("calculation", None),
     "What are the main risk factors?": ("text", None),
-    "What was Apple's revenue?": (None, None),                 # not listed: nothing narrowed
+    "What was Apple's revenue?": (None, None),                 # not listed: answered as unavailable
+    # Other companies mentioned aren't the company asked about
+    "How much goodwill was recorded for the Activision Blizzard acquisition?": ("text", None),
+    "How does Microsoft compete with Google?": ("text", "msft.pdf"),
+    "Who are Acme's largest customers?": ("text", "acme-10k.pdf"),
 }
 FILINGS = {
     "msft.pdf": Filing("msft.pdf", "public", 1, "Microsoft Corporation"),
@@ -83,3 +89,24 @@ def test_planner_picks_the_filing_a_question_names(question):
     if route is not None:
         assert plan.route == route
     assert router.match_filing(plan.company, FILINGS) == filing
+
+
+# question -> whether the question qualifies a listed metric (segment, variant, ...)
+QUALIFIED = {
+    "What was Intelligent Cloud revenue in fiscal 2024?": True,
+    "What was LinkedIn revenue?": True,
+    "What were dividends declared in fiscal 2024?": True,
+    "How much revenue came from the United States in fiscal 2024?": True,
+    "What was adjusted operating income in fiscal 2023?": True,
+    "What was revenue in the fourth quarter of fiscal 2024?": True,
+    "What was the operating margin in fiscal 2024?": False,
+    "What was Microsoft's net income?": False,          # a company isn't a qualifier
+    "What was free cash flow in 2024?": False,
+    "What were dividends paid in fiscal 2024?": False,
+}
+
+
+@pytest.mark.parametrize("question", list(QUALIFIED))
+def test_planner_flags_qualified_metrics(question):
+    plan = router.plan_question(question)
+    assert (plan.qualifier is not None) == QUALIFIED[question], plan

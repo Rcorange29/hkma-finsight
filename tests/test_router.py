@@ -70,9 +70,10 @@ def text_calls(monkeypatch):
     return calls
 
 
-def _plan(route="calculation", metrics=("operating_margin",), years=(), yoy=False, company=None):
+def _plan(route="calculation", metrics=("operating_margin",), years=(), yoy=False, company=None,
+          qualifier=None):
     plan = QuestionPlan(route=route, metrics=list(metrics), fiscal_years=list(years),
-                        year_over_year=yoy, company=company)
+                        year_over_year=yoy, company=company, qualifier=qualifier)
     return lambda question: plan
 
 
@@ -128,10 +129,12 @@ def test_only_the_callers_filings_and_the_samples_can_be_picked(text_calls):
     _store("alice", "acme.pdf", {("revenue", 2024): 10})
     _store("bob", "secret.pdf", {("revenue", 2024): 99})
     assert set(router.visible_filings("alice")) == {"msft.pdf", "acme.pdf"}
-    # Naming another user's company narrows nothing: their filing isn't a candidate
+    # Another user's company is answered like any company with no filing here
     result = router.answer("Secret Corp's risks?", "alice",
                            planner=_plan(route="text", metrics=(), company="Secret Corp"))
-    assert (result.filing, text_calls[-1][2]) == (None, None)
+    assert result.route == "none"
+    assert "secret.pdf" not in result.answer
+    assert text_calls == []
 
 
 def test_other_users_figures_are_never_used(text_calls):
@@ -147,10 +150,13 @@ def test_source_file_restricts_the_calculation(text_calls):
     result = router.answer("Acme revenue?", "alice",
                            planner=_plan(metrics=["revenue"], company="Acme"))
     assert [s.source_file for s in result.series] == ["acme.pdf"]
-    # A company that matches no filing narrows nothing
-    result = router.answer("Revenue?", "alice",
+    # A company with no filing here gets a clear answer, not another company's figures
+    result = router.answer("Apple's revenue?", "alice",
                            planner=_plan(metrics=["revenue"], company="Apple"))
-    assert sorted(s.source_file for s in result.series) == ["acme.pdf", "msft.pdf"]
+    assert (result.route, result.series, result.sources) == ("none", [], [])
+    assert result.answer.startswith("No filing for Apple is available")
+    assert "Acme Inc. (acme.pdf)" in result.answer
+    assert "Microsoft Corporation (msft.pdf)" in result.answer
 
 
 def test_own_file_shadows_a_sample_of_the_same_name(text_calls):
@@ -395,3 +401,29 @@ def test_the_transcript_keeps_the_last_turns_and_cuts_long_answers():
     assert len(transcript) == followup.MAX_TURNS
     assert transcript[0] == "User: q5"
     assert transcript[-1] == "Assistant: " + "x" * followup.MAX_CHARS + " …"
+
+
+# ---------------------------------------------------------------------------
+# Qualified metrics go to text
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("qualifier", ["Intelligent Cloud", "declared", "Q4", "adjusted"])
+def test_a_qualified_metric_is_answered_from_text(text_calls, qualifier):
+    """The engine holds company-wide annual figures; a segment, quarter or variant isn't one."""
+    _store(PUBLIC_OWNER, "msft.pdf", MSFT)
+    result = router.answer("Intelligent Cloud revenue?", "alice",
+                           planner=_plan(metrics=["revenue"], qualifier=qualifier))
+    assert result.route == "text"
+    assert result.series == []
+    assert text_calls == [("Intelligent Cloud revenue?", "alice", None)]
+
+
+def test_a_named_company_matching_several_filings_searches_them_all(text_calls, monkeypatch):
+    monkeypatch.setattr(ingest, "filings", lambda owners: [
+        Filing("msft-2023.pdf", "alice", 1, "Microsoft Corporation"),
+        Filing("msft-2024.pdf", "alice", 1, "Microsoft Corporation"),
+    ])
+    result = router.answer("Microsoft's risks?", "alice",
+                           planner=_plan(route="text", metrics=(), company="Microsoft"))
+    assert (result.route, result.filing) == ("text", None)
+    assert text_calls[-1][2] is None

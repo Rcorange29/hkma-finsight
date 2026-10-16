@@ -25,6 +25,7 @@ data/users/
 
 # Evaluation output
 evaluation_results.json
+answer_eval_results.json
 
 # Model / HF caches
 .cache/
