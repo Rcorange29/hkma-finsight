@@ -288,6 +288,26 @@ def test_statement_pages_picks_the_three_statements():
     assert list(statement_pages(pages)) == [66, 68, 70]
 
 
+def test_a_row_naming_a_statement_is_not_its_heading():
+    # Travelers: the comprehensive income statement sits between the income
+    # statement and the balance sheet, and one of its first rows names the
+    # income statement. Taken for a heading, it made a tighter run of pages
+    # than the real income statement and replaced it.
+    comprehensive = "\n".join([
+        "THE TRAVELERS COMPANIES, INC. AND SUBSIDIARIES",
+        "CONSOLIDATED STATEMENT OF COMPREHENSIVE INCOME",
+        "(in millions)",
+        "For the year ended December 31, 2025 2024 2023",
+        "Net income $ 6,288 $ 4,999 $ 2,991",
+        "Other comprehensive income (loss):",
+        "Having no credit losses recognized in the consolidated statement of income"
+        " 2,744 ( 644 ) 2,249",
+    ] + [f"Item {i}  1,{i:03d}  2,{i:03d}" for i in range(12)])
+    income = INCOME.replace("INCOME STATEMENTS", "CONSOLIDATED STATEMENT OF INCOME")
+    pages = {118: income, 119: comprehensive, 120: BALANCE, 122: CASH}
+    assert list(statement_pages(pages)) == [118, 120, 122]
+
+
 # ---------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------

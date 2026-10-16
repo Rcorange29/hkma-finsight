@@ -422,7 +422,11 @@ def statement_pages(pages: dict[int, str]) -> dict[int, str]:
     for number in sorted(pages):
         text = pages[number]
         top = [ln for ln in text.splitlines() if ln.strip()][:_HEADING_LINES]
-        heading = "\n".join(ln for ln in top if "comprehensive" not in ln.lower())
+        # A row with figures isn't a heading, even one that names a statement:
+        # Travelers' comprehensive income lists gains "recognized in the
+        # consolidated statement of income 2,744 (644) 2,249"
+        heading = "\n".join(ln for ln in top
+                            if "comprehensive" not in ln.lower() and not _GROUPED.search(ln))
         if len(_GROUPED.findall(text)) < _MIN_FIGURES:
             continue
         found = {kind for kind, rx in _HEADINGS.items() if rx.search(heading)}
