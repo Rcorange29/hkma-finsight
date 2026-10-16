@@ -14,9 +14,10 @@ with its citation in `calculations`; other questions use text retrieval.
 Questions and uploads count against usage limits (see usage.py); one over a
 limit gets 429 with a Retry-After header.
 
-Every request except /health carries an X-User-Id header naming the signed-in
-user. The API trusts it without checking a token, because only the Streamlit
-UI can reach this service: it must never be exposed to the internet directly.
+Every request except /health carries the signed-in user's Cognito ID token
+(`Authorization: Bearer ...`), verified in auth.py; the user id is the token's
+subject. In local mode (AUTH_DISABLED=1) an X-User-Id header is trusted instead.
+Only the Streamlit UI should reach this service, but it no longer relies on that.
 
 Usage:
     uvicorn financial_rag.api:app --reload --port 8000
@@ -35,7 +36,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pypdf.errors import PdfReadError
 
-from financial_rag import analysis, financials, ingest, router, usage
+from financial_rag import analysis, auth, financials, ingest, router, usage
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # a 10-K PDF is typically 1-10 MB
 MAX_UPLOAD_PAGES = 500                # most 10-Ks run 80-300 pages
@@ -189,14 +190,21 @@ def safe_pdf_name(filename: str | None) -> str:
     return name
 
 
-def current_owner(x_user_id: str | None = Header(default=None)) -> str:
-    if (
-        not x_user_id
-        or not _OWNER_RE.fullmatch(x_user_id)
-        or x_user_id == ingest.PUBLIC_OWNER
-    ):
+def current_owner(
+    authorization: str | None = Header(default=None),
+    x_user_id: str | None = Header(default=None),
+) -> str:
+    """The signed-in user: the verified ID token's subject (see auth.py)."""
+    if auth.header_trusted():
+        owner = x_user_id
+    else:
+        try:
+            owner = auth.verify(authorization).get("sub")
+        except auth.AuthError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    if not owner or not _OWNER_RE.fullmatch(owner) or owner == ingest.PUBLIC_OWNER:
         raise HTTPException(status_code=401, detail="Missing or invalid user id.")
-    return x_user_id
+    return owner
 
 
 @app.get("/health")

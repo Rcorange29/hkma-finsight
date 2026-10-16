@@ -382,8 +382,23 @@ authorization-code flow, the `openid email profile` scopes, and your callback UR
 `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill it in. That file
 is gitignored and never copied into the Docker image.
 
+**The API verifies who is calling.** The UI sends the signed-in user's Cognito ID token
+(`expose_tokens = "id"` in `secrets.toml`) as `Authorization: Bearer …`. `auth.py`
+checks four things:
+- the signature, against the user pool's published keys;
+- the issuer and audience (your pool and app client);
+- the expiry;
+- that it is an ID token.
+
+The user id is the token's `sub`, so a caller can't claim to be someone else, even if
+the API port were exposed by mistake. Set `COGNITO_ISSUER` and `COGNITO_CLIENT_ID` in
+`.env` for the API (`start.py` reads them from `secrets.toml`). Cognito ID tokens last an
+hour; after that the UI offers a one-click "Sign in again".
+
 The app fails closed: if `secrets.toml` has no `[auth]` section, it refuses to start
-unless `AUTH_DISABLED=1` is set, which `start.py` does for you in local mode.
+unless `AUTH_DISABLED=1` is set, which `start.py` does for you in local mode. The API
+fails closed too. It trusts an `X-User-Id` header only with `AUTH_DISABLED=1`, and with
+neither that nor the Cognito settings it refuses every request.
 
 ### Uploading your own filings
 
@@ -469,10 +484,12 @@ Details worth knowing:
 
 ## API
 
-Every endpoint except `/health` requires an `X-User-Id` header naming the user
-(`[A-Za-z0-9-]`, up to 64 characters); requests without one get `401`. The API trusts this
-header without verifying a token, because only the Streamlit UI can reach it. **Never
-expose port 8000 to the internet**: anyone who could reach it could act as any user.
+Every endpoint except `/health` requires the signed-in user's Cognito ID token,
+`Authorization: Bearer <token>` (see [Sign-in and per-user data](#sign-in-and-per-user-data)).
+A missing, forged, expired or wrong-audience token gets `401`, and a server without the
+Cognito settings answers `503`. In local mode (`AUTH_DISABLED=1`, as in the examples
+below), an `X-User-Id` header names the user instead (`[A-Za-z0-9-]`, up to 64
+characters). Keep port 8000 private anyway: only the UI needs to reach it.
 
 `POST /query`: answers from the caller's filings and the shared samples
 
@@ -804,6 +821,8 @@ pytest
 Tests cover:
 - the chunking logic and prompt formatting;
 - the upload path: validation, staging, replace-on-reupload;
+- sign-in tokens: valid ID tokens accepted; forged, unsigned, expired, wrong-issuer,
+  wrong-audience and access tokens rejected; `X-User-Id` ignored unless in local mode;
 - usage limits: monthly, per-minute and daily caps, calendar resets, refunds of failed
   requests, `429` responses, and that an over-limit upload is never ingested;
 - hybrid search: the tokenizer, BM25, query profiles, rank fusion and citation excerpts;

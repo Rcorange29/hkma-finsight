@@ -112,6 +112,20 @@ def run_ingest() -> None:
     _print("Ingestion complete.")
 
 
+def api_env() -> dict[str, str]:
+    """The API checks the same login the UI uses, or trusts the local user."""
+    env = os.environ.copy()
+    auth = login_settings()
+    if auth is None:
+        env["AUTH_DISABLED"] = "1"
+        return env
+    # Cognito's metadata URL is <issuer>/.well-known/openid-configuration
+    metadata = auth.get("server_metadata_url", "")
+    env.setdefault("COGNITO_ISSUER", metadata.split("/.well-known/")[0])
+    env.setdefault("COGNITO_CLIENT_ID", auth.get("client_id", ""))
+    return env
+
+
 def start_api() -> subprocess.Popen:
     _print(f"Starting FastAPI server on port {API_PORT} …")
     proc = subprocess.Popen(
@@ -122,16 +136,35 @@ def start_api() -> subprocess.Popen:
             "--port", str(API_PORT),
         ],
         cwd=ROOT,
+        env=api_env(),
     )
     return proc
 
 
-def login_configured() -> bool:
+def login_settings() -> dict[str, str] | None:
+    """The [auth] section of .streamlit/secrets.toml, or None without one.
+
+    Read line by line rather than with tomllib, which needs Python 3.11+.
+    """
     secrets = ROOT / ".streamlit" / "secrets.toml"
     if not secrets.exists():
-        return False
-    # A plain line check rather than tomllib, which needs Python 3.11+
-    return any(line.strip() == "[auth]" for line in secrets.read_text().splitlines())
+        return None
+    section = None
+    settings: dict[str, str] | None = None
+    for line in secrets.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+            if section == "[auth]":
+                settings = {}
+        elif section == "[auth]" and "=" in line and not line.startswith("#"):
+            key, _, value = line.partition("=")
+            settings[key.strip()] = value.strip().strip('"').strip("'")
+    return settings
+
+
+def login_configured() -> bool:
+    return login_settings() is not None
 
 
 def start_streamlit() -> subprocess.Popen:
