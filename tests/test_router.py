@@ -102,6 +102,33 @@ def test_no_figures_skips_the_planner(text_calls):
     assert router.answer("Operating margin?", "alice", planner=boom).route == "text"
 
 
+def test_a_headcount_is_never_answered_with_the_share_count(text_calls):
+    _store(PUBLIC_OWNER, "msft.pdf", MSFT)
+    question = "How many full-time equivalent employees did the company have?"
+    result = router.answer(question, "alice", planner=_plan(metrics=["diluted_shares"]))
+    assert result.route == "text"
+    assert text_calls == [(question, "alice", None)]
+
+
+@pytest.mark.parametrize(
+    ("question", "kept"),
+    [
+        ("How many employees were there?", []),
+        ("How many diluted shares were outstanding?", ["diluted_shares"]),
+        ("What was the diluted share count?", ["diluted_shares"]),
+        ("Diluted EPS and share count?", ["eps_diluted", "diluted_shares"]),
+    ],
+)
+def test_plausible_metrics(question, kept):
+    planned = ["eps_diluted", "diluted_shares"] if "EPS" in question else ["diluted_shares"]
+    assert router.plausible_metrics(question, planned) == kept
+
+
+def test_plausible_metrics_deduplicates_in_order():
+    assert router.plausible_metrics("Revenue?", ["revenue", "net_income", "revenue"]) == [
+        "revenue", "net_income"]
+
+
 def test_planner_failure_falls_back_to_text(text_calls):
     _store(PUBLIC_OWNER, "msft.pdf", MSFT)
 

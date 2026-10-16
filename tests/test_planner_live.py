@@ -44,6 +44,11 @@ CASES = {
     "Who is the CEO?": ("text", None, None, None),
     "What does the company say about its revenue recognition policy?": ("text", None, None, None),
     "How many employees does Microsoft have?": ("text", None, None, None),
+    # Planned as diluted_shares 8 times in 8 before the headcount rule
+    "How many full-time equivalent employees did Apple have at the end of fiscal 2025?":
+        ("text", None, None, None),
+    "How many diluted shares did Apple have in fiscal 2025?":
+        ("calculation", {"diluted_shares"}, [2025], None),
 }
 
 
