@@ -5,7 +5,7 @@ These cover pure text logic only - no API key, no network, no vector store.
 
 from langchain_core.documents import Document
 
-from ingest import (
+from financial_rag.ingest import (
     _TABLE_NL,
     _is_table_line,
     _protect_table_blocks,

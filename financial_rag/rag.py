@@ -39,10 +39,9 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import BaseModel, Field
 
-import config
-import hybrid
-from financials import page_number
-from ingest import PUBLIC_OWNER
+from financial_rag import config, hybrid
+from financial_rag.financials import page_number
+from financial_rag.ingest import PUBLIC_OWNER
 
 load_dotenv()
 
@@ -306,7 +305,7 @@ def _load_vectorstore() -> Chroma:
     if not CHROMA_DIR.exists():
         raise RuntimeError(
             f"ChromaDB not found at {CHROMA_DIR.resolve()}. "
-            "Run `python ingest.py` first."
+            "Run `python -m financial_rag.ingest` first."
         )
     embeddings = OpenAIEmbeddings(model=config.EMBEDDING_MODEL)
     return Chroma(

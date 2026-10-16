@@ -3,10 +3,10 @@ app.py — Streamlit chat interface for the Financial Report Q&A Engine, with
 sign-in and a sidebar for uploading and indexing your own 10-K PDFs.
 
 Usage:
-    streamlit run app.py
+    streamlit run financial_rag/app.py
 
 Requires the FastAPI server to be running:
-    uvicorn api:app --reload --port 8000
+    uvicorn financial_rag.api:app --reload --port 8000
 
 Login uses Streamlit's built-in OIDC support (st.login) against Amazon Cognito,
 configured in .streamlit/secrets.toml (see .streamlit/secrets.toml.example).
@@ -259,7 +259,7 @@ if question := st.chat_input("Ask a question about the financial reports …"):
             except httpx.ConnectError:
                 answer = (
                     "Could not connect to the API server. "
-                    "Make sure `uvicorn api:app --reload --port 8000` is running."
+                    "Make sure `uvicorn financial_rag.api:app --reload --port 8000` is running."
                 )
                 sources = []
                 filing = None

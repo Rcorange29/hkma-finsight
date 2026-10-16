@@ -19,13 +19,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-import analysis
-import config
-import financials
-import followup
-import ingest
-import rag
-from ingest import PUBLIC_OWNER
+from financial_rag import analysis, config, financials, followup, ingest, rag
+from financial_rag.ingest import PUBLIC_OWNER
 
 # The planner picks from the company-wide metrics only; a part of the company
 # (a segment, an area, a product line) comes through the qualifier, and code

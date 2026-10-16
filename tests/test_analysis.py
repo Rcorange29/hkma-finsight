@@ -8,8 +8,8 @@ from decimal import Decimal
 
 import pytest
 
-from analysis import METRICS, analyze, compute, format_value, index_facts, render
-from financials import LINE_ITEMS, Fact
+from financial_rag.analysis import METRICS, analyze, compute, format_value, index_facts, render
+from financial_rag.financials import LINE_ITEMS, Fact
 
 M = Decimal(1_000_000)
 

@@ -19,10 +19,10 @@ and three configurations:
 Every answer was checked against Microsoft's FY2024 10-K text. The LLM
 configuration makes one gpt-4o-mini call per question (about $0.002 each, so
 roughly $0.15 a run); the others only embed the questions. Needs the ingested
-sample (python ingest.py). Pass --no-llm to skip the LLM configuration.
+sample (python -m financial_rag.ingest). Pass --no-llm to skip the LLM configuration.
 
 Usage:
-    python eval_retrieval.py [--no-llm]
+    python -m financial_rag.eval_retrieval [--no-llm]
 """
 
 from __future__ import annotations
@@ -30,9 +30,9 @@ from __future__ import annotations
 import re
 import sys
 
-import rag
-from evaluate import EVAL_QUESTIONS
-from ingest import PUBLIC_OWNER
+from financial_rag import rag
+from financial_rag.evaluate import EVAL_QUESTIONS
+from financial_rag.ingest import PUBLIC_OWNER
 
 # Evidence for ground truths without a figure in them; None = not scored
 EVIDENCE_OVERRIDES = {

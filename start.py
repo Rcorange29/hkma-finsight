@@ -105,8 +105,8 @@ def check_data() -> bool:
 # ---------------------------------------------------------------------------
 
 def run_ingest() -> None:
-    _print("Running ingest.py …")
-    result = subprocess.run([PYTHON, str(ROOT / "ingest.py")], cwd=ROOT)
+    _print("Running financial_rag.ingest …")
+    result = subprocess.run([PYTHON, "-m", "financial_rag.ingest"], cwd=ROOT)
     if result.returncode != 0:
         _abort("Ingestion failed. Check the output above.")
     _print("Ingestion complete.")
@@ -117,7 +117,7 @@ def start_api() -> subprocess.Popen:
     proc = subprocess.Popen(
         [
             PYTHON, "-m", "uvicorn",
-            "api:app",
+            "financial_rag.api:app",
             "--host", API_HOST,
             "--port", str(API_PORT),
         ],
@@ -143,7 +143,7 @@ def start_streamlit() -> subprocess.Popen:
     proc = subprocess.Popen(
         [
             PYTHON, "-m", "streamlit", "run",
-            str(ROOT / "app.py"),
+            str(ROOT / "financial_rag" / "app.py"),
             "--server.port", str(UI_PORT),
             "--server.headless", "true",
             "--browser.gatherUsageStats", "false",

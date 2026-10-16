@@ -11,8 +11,8 @@ import os
 
 import pytest
 
-import router
-from ingest import Filing
+from financial_rag import router
+from financial_rag.ingest import Filing
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_LIVE_TESTS") != "1", reason="calls OpenAI; set RUN_LIVE_TESTS=1"

@@ -78,6 +78,10 @@ carries a visible "Not verified against the excerpts" warning naming each proble
                           api.py (FastAPI :8000) ◄── app.py (Streamlit :8501)
 ```
 
+The modules live in the `financial_rag/` package. Run them from the repository root
+(`python -m financial_rag.<module>`), since data and the vector store are found by
+relative paths.
+
 | File | Role |
 | --- | --- |
 | `ingest.py` | Loads PDFs from `data/`, chunks them (1024 tokens / 128 overlap, table-aware), embeds and persists to ChromaDB. |
@@ -211,8 +215,8 @@ user's. To extract figures for filings ingested before this engine existed, with
 re-embedding them:
 
 ```bash
-python financials.py                        # (re)extract figures for every PDF in data/
-python financials.py data/some-10k.pdf      # print what would be extracted from one PDF
+python -m financial_rag.financials                    # (re)extract figures for every PDF in data/
+python -m financial_rag.financials data/some-10k.pdf  # print what would be extracted from one PDF
 ```
 
 ---
@@ -417,10 +421,10 @@ login is disabled, is never limited. Counts are kept in `chroma_db/usage.sqlite3
 ### Running the pieces individually
 
 ```bash
-python ingest.py                              # build the vector store
-uvicorn api:app --reload --port 8000          # API
-streamlit run app.py                          # UI (needs the API running)
-python rag.py "What was total revenue?"       # one-shot CLI query
+python -m financial_rag.ingest                          # build the vector store
+uvicorn financial_rag.api:app --reload --port 8000      # API
+streamlit run financial_rag/app.py                      # UI (needs the API running)
+python -m financial_rag.rag "What was total revenue?"   # one-shot CLI query
 ```
 
 ---
@@ -587,7 +591,7 @@ requires a re-ingest: `python start.py --reingest`.
 Model names live in `config.py`. Every language-model call uses `CHAT_MODEL`
 (`gpt-4o-mini` by default), which the environment variable of the same name overrides.
 To compare a model, run the benchmark with it:
-`CHAT_MODEL=<model> python eval_answers.py`. Add the model's prices to `PRICES` in
+`CHAT_MODEL=<model> python -m financial_rag.eval_answers`. Add the model's prices to `PRICES` in
 `eval_answers.py` for a cost estimate. The embedding model is fixed, because changing it
 means re-ingesting.
 
@@ -614,7 +618,7 @@ marks a correct "not found in context" as unfaithful. Its packages are kept out 
 ### End-to-end answers
 
 ```bash
-python eval_answers.py
+python -m financial_rag.eval_answers
 ```
 
 Runs 47 questions through `router.answer` exactly as the API does: follow-up rewriting,
@@ -688,7 +692,7 @@ than the token count suggests.
 
 ```bash
 pip install -r requirements-ragas.txt   # Python 3.12 or older
-python evaluate.py
+python -m financial_rag.evaluate
 ```
 
 Runs [RAGAs](https://docs.ragas.io) over the 28 questions in `EVAL_QUESTIONS`, scoring
@@ -737,8 +741,8 @@ Two things to know before reading the numbers:
 ### Retrieval benchmark
 
 ```bash
-python eval_retrieval.py            # about $0.15 of gpt-4o-mini calls
-python eval_retrieval.py --no-llm   # skip the LLM reranking configuration
+python -m financial_rag.eval_retrieval            # about $0.15 of gpt-4o-mini calls
+python -m financial_rag.eval_retrieval --no-llm   # skip the LLM reranking configuration
 ```
 
 Scores retrieval alone. A question counts as a hit when a retrieved chunk contains its

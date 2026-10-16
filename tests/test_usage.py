@@ -6,10 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 
-import api
-import ingest
-import router
-import usage
+from financial_rag import api, ingest, router, usage
 
 ALICE = "0f8b1c2e-alice"
 BOB = "7d3a9e41-bob"

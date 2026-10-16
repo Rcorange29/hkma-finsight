@@ -34,7 +34,7 @@ services:
 
   ui:
     build: .
-    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false
+    command: streamlit run financial_rag/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false
     environment:
       # Inside the compose network the API is reachable by service name,
       # not localhost. app.py reads this; defaults to localhost outside Docker.
@@ -68,7 +68,7 @@ services:
   ingest:
     profiles: ["tools"]
     build: .
-    command: python ingest.py
+    command: python -m financial_rag.ingest
     env_file: .env
     volumes:
       - chroma-data:/app/chroma_db

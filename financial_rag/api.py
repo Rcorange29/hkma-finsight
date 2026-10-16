@@ -19,7 +19,7 @@ user. The API trusts it without checking a token, because only the Streamlit
 UI can reach this service: it must never be exposed to the internet directly.
 
 Usage:
-    uvicorn api:app --reload --port 8000
+    uvicorn financial_rag.api:app --reload --port 8000
 """
 
 from __future__ import annotations
@@ -35,11 +35,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pypdf.errors import PdfReadError
 
-import analysis
-import financials
-import ingest
-import router
-import usage
+from financial_rag import analysis, financials, ingest, router, usage
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # a 10-K PDF is typically 1-10 MB
 MAX_UPLOAD_PAGES = 500                # most 10-Ks run 80-300 pages
@@ -304,7 +300,7 @@ def upload_document(file: UploadFile, owner: str = Depends(current_owner)):
     # atomic replace) under the real name, which ingest records as source_file
     # for citations. The globs in ingest.main() are non-recursive, so they never
     # see the staging dir. A file only lands in data/ once it ingests, so a
-    # failed upload can't break a later `python ingest.py` run.
+    # failed upload can't break a later `python -m financial_rag.ingest` run.
     with tempfile.TemporaryDirectory(dir=user_dir) as staging:
         staged = Path(staging) / name
         staged.write_bytes(data)

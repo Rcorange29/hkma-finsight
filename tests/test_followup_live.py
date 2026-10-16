@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-import followup
+from financial_rag import followup
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_LIVE_TESTS") != "1", reason="calls OpenAI; set RUN_LIVE_TESTS=1"
