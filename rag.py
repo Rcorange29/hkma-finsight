@@ -1,34 +1,50 @@
 """
-rag.py — Core RAG logic with score-threshold filtering and cross-encoder reranking.
+rag.py — Core RAG logic: hybrid (semantic + BM25) retrieval and cross-encoder reranking.
 
 Pipeline:
-  1. Embed the question and retrieve top-RETRIEVE_K candidates from ChromaDB.
-  2. Drop any chunk whose cosine-similarity relevance score < SCORE_THRESHOLD (0.40).
-  3. Rerank survivors with cross-encoder/ms-marco-MiniLM-L-6-v2.
-  4. Keep top-TOP_K (5) chunks and send to GPT-4o-mini.
+  1. Semantic: embed the question, take the top RETRIEVE_K chunks from ChromaDB,
+     and drop any whose relevance score is below SCORE_THRESHOLD.
+  2. Keyword: BM25 over the same chunks (the caller's own filings plus the public
+     samples) gives its top KEYWORD_K. It catches exact fiscal years, line-item
+     labels and values that embeddings blur together.
+  3. Fuse the two rankings (weighted reciprocal rank fusion; the keyword weight
+     depends on the question, see hybrid.profile_query) and keep RERANK_CANDIDATES.
+  4. Rerank those with cross-encoder/ms-marco-MiniLM-L-6-v2. When the question
+     quotes exact values ("57,582"), chunks containing all of them go first.
+  5. Send the top TOP_K (5) to GPT-4o-mini. Every returned chunk records how it
+     was found under metadata["retrieval"], and the API passes that on.
+
+HYBRID_SEARCH=0 turns step 2 off, leaving the semantic-only pipeline.
 """
 
 from __future__ import annotations
 
+import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
+from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
+import hybrid
 from ingest import PUBLIC_OWNER
 
 load_dotenv()
 
 CHROMA_DIR = Path("chroma_db")
 COLLECTION_NAME = "financial_reports"
-RETRIEVE_K = 20           # candidates pulled from ChromaDB before filtering
+RETRIEVE_K = 20           # semantic candidates pulled from ChromaDB before filtering
 SCORE_THRESHOLD = 0.10    # minimum relevance score (Chroma L2-normalised scores top ~0.16)
+KEYWORD_K = 20            # BM25 candidates
+RERANK_CANDIDATES = 30    # fused candidates the cross-encoder scores
 TOP_K = 5                 # final chunks sent to the LLM after reranking
+HYBRID_SEARCH = os.getenv("HYBRID_SEARCH", "1") != "0"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 SYSTEM_PROMPT = """You are a financial analyst assistant. Answer questions using ONLY \
@@ -149,29 +165,143 @@ def owner_filter(owner: str | None) -> dict | None:
     return {"owner": {"$in": [owner, PUBLIC_OWNER]}}
 
 
-def retrieve_and_rerank(question: str, vectorstore: Chroma, owner: str | None = None) -> list:
+# Keyword corpus: chunk id -> (chunk, BM25 term counts), per Chroma collection.
+# Filled lazily from the store and kept in step with it, so a query only
+# re-reads chunks added since the last one.
+_corpora: dict[str, dict[str, tuple[Document, hybrid.Indexed]]] = {}
+_corpora_lock = threading.Lock()
+_FETCH_BATCH = 500
+
+
+def _chunk_id(doc) -> str:
+    """Chroma's id for the chunk, or a stand-in built from its provenance."""
+    if doc.id:
+        return doc.id
+    meta = doc.metadata
+    return f"{meta.get('owner')}/{meta.get('source_file')}/{meta.get('page')}/{hash(doc.page_content)}"
+
+
+def _visible(meta: dict, owner: str | None) -> bool:
+    return owner is None or meta.get("owner") in (owner, PUBLIC_OWNER)
+
+
+def _keyword_corpus(vectorstore: Chroma, owner: str | None) -> list[tuple[Document, hybrid.Indexed]]:
     """
-    1. Fetch top-RETRIEVE_K chunks the owner may see, with relevance scores.
-    2. Drop chunks below SCORE_THRESHOLD.
-    3. Cross-encoder rerank, return top-TOP_K.
+    Every chunk the owner may see, with its BM25 term counts.
+
+    Scope comes from the same owner_filter as the semantic search, applied by
+    Chroma, so the keyword path can't surface another user's chunks either.
     """
-    # Step 1 — semantic retrieval with relevance scores (0 = dissimilar, 1 = identical)
+    ids = vectorstore.get(where=owner_filter(owner), include=[])["ids"]
+    with _corpora_lock:
+        cache = _corpora.setdefault(vectorstore._collection.id, {})
+        missing = [i for i in ids if i not in cache]
+        for start in range(0, len(missing), _FETCH_BATCH):
+            got = vectorstore.get(
+                ids=missing[start:start + _FETCH_BATCH], include=["documents", "metadatas"]
+            )
+            for cid, text, meta in zip(got["ids"], got["documents"], got["metadatas"], strict=True):
+                text = text or ""
+                cache[cid] = (
+                    Document(id=cid, page_content=text, metadata=meta or {}),
+                    hybrid.index_text(text),
+                )
+        # Forget chunks in this scope that the store no longer has (replaced filings)
+        present = set(ids)
+        for cid in [c for c, (doc, _) in cache.items()
+                    if c not in present and _visible(doc.metadata, owner)]:
+            del cache[cid]
+        return [cache[i] for i in ids if i in cache]
+
+
+def _keyword_search(profile: hybrid.QueryProfile, vectorstore: Chroma, owner: str | None):
+    """Top KEYWORD_K chunks by BM25 as (chunk, score, matched terms); no-match chunks dropped."""
+    corpus = _keyword_corpus(vectorstore, owner)
+    scores = hybrid.bm25_scores(profile.terms, [indexed for _, indexed in corpus])
+    ranked = sorted(
+        ((score, doc, indexed) for score, (doc, indexed) in zip(scores, corpus, strict=True)
+         if score > 0),
+        key=lambda x: x[0],
+        reverse=True,
+    )[:KEYWORD_K]
+    return [
+        (doc, score, [t for t in profile.terms if t in indexed.tf])
+        for score, doc, indexed in ranked
+    ]
+
+
+def retrieve_and_rerank(
+    question: str, vectorstore: Chroma, owner: str | None = None, keyword: bool | None = None
+) -> list:
+    """
+    Hybrid retrieval for the chunks the owner may see; see the module docstring.
+
+    Returns up to TOP_K chunks, best first. Each is a copy of the stored chunk
+    whose metadata["retrieval"] records how it was found: chunk_id, matched_by
+    ("semantic" and/or "keyword"), each search's rank and score, the query terms
+    it matched, and the cross-encoder score. `keyword` overrides HYBRID_SEARCH.
+    """
+    keyword = HYBRID_SEARCH if keyword is None else keyword
+    profile = hybrid.profile_query(question)
+
+    # Semantic retrieval with relevance scores (0 = dissimilar, 1 = identical)
     scored = vectorstore.similarity_search_with_relevance_scores(
         question, k=RETRIEVE_K, filter=owner_filter(owner)
     )
+    semantic = [(doc, score) for doc, score in scored if score >= SCORE_THRESHOLD]
+    lexical = _keyword_search(profile, vectorstore, owner) if keyword else []
 
-    # Step 2 — threshold filter
-    filtered = [(doc, score) for doc, score in scored if score >= SCORE_THRESHOLD]
-    if not filtered:
+    docs: dict[str, Document] = {}
+    trace: dict[str, dict] = {}
+
+    def note(doc, via: str, **fields) -> str:
+        cid = _chunk_id(doc)
+        docs.setdefault(cid, doc)
+        entry = trace.setdefault(cid, {"chunk_id": cid, "matched_by": []})
+        entry["matched_by"].append(via)
+        entry.update(fields)
+        return cid
+
+    semantic_ids = [
+        note(doc, "semantic", semantic_rank=rank, semantic_score=round(score, 4))
+        for rank, (doc, score) in enumerate(semantic, 1)
+    ]
+    keyword_ids = [
+        note(doc, "keyword", keyword_rank=rank, keyword_score=round(score, 4),
+             matched_terms=terms)
+        for rank, (doc, score, terms) in enumerate(lexical, 1)
+    ]
+    if not docs:
         return []
 
-    # Step 3 — cross-encoder reranking
-    reranker = _get_reranker()
-    docs = [doc for doc, _ in filtered]
-    ce_scores = reranker.predict([(question, doc.page_content) for doc in docs])
+    fused = hybrid.rrf(
+        [(semantic_ids, hybrid.SEMANTIC_WEIGHT), (keyword_ids, profile.keyword_weight)]
+    )[:RERANK_CANDIDATES]
 
-    ranked = sorted(zip(ce_scores, docs, strict=True), key=lambda x: x[0], reverse=True)
-    return [doc for _, doc in ranked[:TOP_K]]
+    # Cross-encoder reranking of the fused candidates; a chunk containing every
+    # value the question quotes outranks one that doesn't, whatever the model says
+    reranker = _get_reranker()
+    candidates = [cid for cid, _ in fused]
+    ce_scores = reranker.predict([(question, docs[cid].page_content) for cid in candidates])
+    exact = {
+        cid: keyword and hybrid.has_amounts(profile, hybrid.index_text(docs[cid].page_content))
+        for cid in candidates
+    }
+    ranked = sorted(
+        zip(ce_scores, candidates, strict=True),
+        key=lambda x: (exact[x[1]], x[0]),
+        reverse=True,
+    )
+
+    out = []
+    for score, cid in ranked[:TOP_K]:
+        doc = docs[cid]
+        info = {**trace[cid], "rerank_score": round(float(score), 4)}
+        if exact[cid]:
+            info["exact_value_match"] = True
+        out.append(Document(id=doc.id, page_content=doc.page_content,
+                            metadata={**doc.metadata, "retrieval": info}))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -193,10 +323,22 @@ def query(question: str, owner: str | None = None) -> RAGResponse:
         )
 
     answer = _answer_with_docs(question, top_docs)
+    return RAGResponse(
+        answer=answer, sources=build_sources(question, top_docs), retrieved_docs=top_docs
+    )
 
+
+def build_sources(question: str, docs: list) -> list[dict]:
+    """
+    One citation per (file, page), in rank order, with how its chunk was found.
+
+    The excerpt is the stretch of the chunk that matches the question, so a
+    figure that was found by keyword is visible in the citation, not cut off.
+    """
+    terms = hybrid.profile_query(question).terms
     sources = []
     seen: set = set()
-    for doc in top_docs:
+    for doc in docs:
         meta = doc.metadata
         source = meta.get("source_file", meta.get("source", "unknown"))
         page = meta.get("page", "?")
@@ -207,12 +349,11 @@ def query(question: str, owner: str | None = None) -> RAGResponse:
                 {
                     "source_file": source,
                     "page": page,
-                    "excerpt": doc.page_content[:300],
+                    "excerpt": hybrid.focus(doc.page_content, terms)[:300],
+                    "retrieval": meta.get("retrieval"),
                 }
             )
-
-    return RAGResponse(answer=answer, sources=sources, retrieved_docs=top_docs)
-
+    return sources
 
 if __name__ == "__main__":
     import sys
@@ -222,4 +363,6 @@ if __name__ == "__main__":
     print(f"\nAnswer:\n{result.answer}\n")
     print("Sources:")
     for s in result.sources:
-        print(f"  - {s['source_file']} p.{s['page']}: {s['excerpt'][:120]} …")
+        found = s["retrieval"] or {}
+        how = " + ".join(found.get("matched_by", []))
+        print(f"  - {s['source_file']} p.{s['page']} [{how}]: {s['excerpt'][:120]} …")

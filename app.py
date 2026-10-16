@@ -61,6 +61,16 @@ def _md(text: str) -> str:
     return text.replace("$", "\\$")
 
 
+def _found_by(retrieval: dict | None) -> str:
+    """One line on how a cited chunk was retrieved, e.g. "semantic + keyword match"."""
+    if not retrieval:
+        return ""
+    line = " + ".join(retrieval.get("matched_by", [])) + " match"
+    if retrieval.get("matched_terms"):
+        line += " · terms: " + ", ".join(retrieval["matched_terms"])
+    return line
+
+
 def _render_sources(sources: list[dict], expanded: bool) -> None:
     with st.expander("Source citations", expanded=expanded):
         for src in sources:
@@ -68,6 +78,8 @@ def _render_sources(sources: list[dict], expanded: bool) -> None:
                 f"**{src['source_file']}** — Page {src['page']}\n\n"
                 f"> {_md(src['excerpt'])}"
             )
+            if found := _found_by(src.get("retrieval")):
+                st.caption(_md(found))
 
 
 # Who is using the app. Fail closed: with neither login nor the explicit
