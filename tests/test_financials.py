@@ -308,6 +308,21 @@ def test_a_row_naming_a_statement_is_not_its_heading():
     assert list(statement_pages(pages)) == [118, 120, 122]
 
 
+@pytest.mark.parametrize(
+    ("heading", "is_income"),
+    [
+        ("CONSOLIDATED STATEMENTS OF INCOME AND COMPREHENSIVE INCOME", True),  # Realty Income
+        ("Consolidated Statements of Operations and Comprehensive Loss", True),
+        ("CONSOLIDATED STATEMENTS OF COMPREHENSIVE INCOME", False),
+        ("Consolidated Statements of Comprehensive (Loss) Income", False),
+        ("COMPREHENSIVE INCOME STATEMENTS", False),
+    ],
+)
+def test_a_combined_income_and_comprehensive_income_statement_counts(heading, is_income):
+    page = INCOME.replace("INCOME STATEMENTS", heading)
+    assert (list(statement_pages({57: page})) == [57]) is is_income
+
+
 # ---------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------
