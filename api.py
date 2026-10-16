@@ -5,10 +5,14 @@ api.py — FastAPI server for the RAG engine.
   POST /documents   upload a PDF; it is saved under data/users/<id>/ and ingested
   GET  /documents   list your filings and the public samples
   GET  /financials  the structured figures extracted from those filings
+  GET  /usage       this month's questions and uploads, against your limits
 
 Calculation questions (margins, ratios, growth, year-over-year changes) are
 answered by the deterministic analysis engine and return each input figure
 with its citation in `calculations`; other questions use text retrieval.
+
+Questions and uploads count against usage limits (see usage.py); one over a
+limit gets 429 with a Retry-After header.
 
 Every request except /health carries an X-User-Id header naming the signed-in
 user. The API trusts it without checking a token, because only the Streamlit
@@ -26,7 +30,8 @@ import threading
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pypdf.errors import PdfReadError
 
@@ -34,8 +39,10 @@ import analysis
 import financials
 import ingest
 import router
+import usage
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # a 10-K PDF is typically 1-10 MB
+MAX_UPLOAD_PAGES = 500                # most 10-Ks run 80-300 pages
 
 # Cognito subs are UUIDs; "local" is the single user when login is disabled.
 # The id becomes a directory name, so anything else is rejected outright.
@@ -50,6 +57,14 @@ app = FastAPI(
     description="Ask questions about 10-K filings via RAG.",
     version="1.0.0",
 )
+
+
+@app.exception_handler(usage.LimitReached)
+def limit_reached(request: Request, exc: usage.LimitReached) -> JSONResponse:
+    return JSONResponse(
+        status_code=429, content={"detail": str(exc)},
+        headers={"Retry-After": str(exc.retry_after)},
+    )
 
 
 class Turn(BaseModel):
@@ -140,6 +155,14 @@ class FigureList(BaseModel):
     figures: list[Figure]
 
 
+class UsageInfo(BaseModel):
+    questions: int
+    question_limit: int     # 0 = unlimited
+    uploads: int
+    upload_limit: int
+    resets: str             # date the monthly counts start again (UTC)
+
+
 def _figure(fact: financials.Fact, shared: bool = False) -> Figure:
     return Figure(
         source_file=fact.source_file, page=financials.page_number(fact.page), line=fact.line,
@@ -189,16 +212,20 @@ def health():
 def query_endpoint(request: QueryRequest, owner: str = Depends(current_owner)):
     if not request.question.strip():
         raise HTTPException(status_code=422, detail="Question must not be empty.")
+    event = usage.record(owner, usage.QUESTION)
     try:
         result = router.answer(
             request.question, owner, request.source_file,
             history=[(turn.role, turn.content) for turn in request.history],
         )
     except router.UnknownFiling as exc:
+        usage.refund(event)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
+        usage.refund(event)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
+        usage.refund(event)
         raise HTTPException(status_code=500, detail=f"Inference error: {exc}") from exc
 
     calculations = [
@@ -248,6 +275,15 @@ def list_financials(source_file: str | None = None, owner: str = Depends(current
     return FigureList(figures=[_figure(f, shared=f.owner != owner) for f in facts])
 
 
+@app.get("/usage", response_model=UsageInfo)
+def get_usage(owner: str = Depends(current_owner)):
+    counts = usage.usage(owner)
+    return UsageInfo(
+        questions=counts.questions, question_limit=counts.question_limit,
+        uploads=counts.uploads, upload_limit=counts.upload_limit, resets=counts.resets,
+    )
+
+
 @app.post("/documents", response_model=DocumentInfo, status_code=201)
 def upload_document(file: UploadFile, owner: str = Depends(current_owner)):
     name = safe_pdf_name(file.filename)
@@ -259,6 +295,8 @@ def upload_document(file: UploadFile, owner: str = Depends(current_owner)):
         )
     if not data.startswith(b"%PDF-"):
         raise HTTPException(status_code=415, detail="File is not a valid PDF.")
+    # Counted once the file looks like a PDF; refunded below if it won't ingest
+    event = usage.record(owner, usage.UPLOAD)
 
     user_dir = ingest.USERS_DIR / owner
     user_dir.mkdir(parents=True, exist_ok=True)
@@ -272,11 +310,13 @@ def upload_document(file: UploadFile, owner: str = Depends(current_owner)):
         staged.write_bytes(data)
         try:
             with _ingest_lock:
-                chunks = ingest.ingest_file(staged, owner)
+                chunks = ingest.ingest_file(staged, owner, max_pages=MAX_UPLOAD_PAGES)
                 staged.replace(user_dir / name)
         except (ValueError, PdfReadError) as exc:
+            usage.refund(event)
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
+            usage.refund(event)
             raise HTTPException(status_code=500, detail=f"Ingestion error: {exc}") from exc
 
     company = next(

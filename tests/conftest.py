@@ -3,12 +3,19 @@ import pytest
 import financials
 import ingest
 import rag
+import usage
 
 
 @pytest.fixture(autouse=True)
 def isolated_facts_db(tmp_path, monkeypatch):
     """Every test gets its own figures database, never the real chroma_db/ one."""
     monkeypatch.setattr(financials, "FACTS_DB", tmp_path / "facts" / "financials.sqlite3")
+
+
+@pytest.fixture(autouse=True)
+def isolated_usage_db(tmp_path, monkeypatch):
+    """Nor the real usage counts, so one test's questions never limit another's."""
+    monkeypatch.setattr(usage, "USAGE_DB", tmp_path / "usage" / "usage.sqlite3")
 
 
 @pytest.fixture(autouse=True)
