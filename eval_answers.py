@@ -5,7 +5,8 @@ eval_retrieval.py measures search; evaluate.py has an LLM judge text answers.
 This runs whole questions through router.answer, exactly as the API does
 (follow-up rewriting, planning, filing choice, calculation or retrieval, LLM
 reranking, the answer check), and scores the final answers against figures
-checked by hand in Microsoft's FY2024 10-K:
+checked by hand in the two sample filings, Microsoft's FY2024 10-K and Apple's
+FY2025 10-K. Questions that name no company are answered with both loaded:
 
   - correct:  every expected figure is in the answer, and nothing that must not
               be (a refusal must not quote another company's numbers)
@@ -14,8 +15,9 @@ checked by hand in Microsoft's FY2024 10-K:
   - cited:    the answer cites a page (refusals excepted)
 
 Also reports latency and gpt-4o-mini tokens per question, with a cost estimate
-at list prices. A run costs about $0.02-0.03. Needs the
-ingested sample (python ingest.py) and its figures (python financials.py).
+at list prices. A run costs about $0.05. Needs both samples in data/
+(microsoft-sec-10k.pdf, apple-sec-10k.pdf), ingested (python ingest.py) with
+their figures (python financials.py).
 Results go to answer_eval_results.json.
 
 Usage:
@@ -59,6 +61,11 @@ REVENUE_2024 = [
 LINKEDIN_2024 = [
     ("user", "What was LinkedIn revenue in fiscal 2024?"),
     ("assistant", "LinkedIn revenue was $16,372 million in fiscal 2024 (microsoft-sec-10k.pdf, p.114)."),
+]
+APPLE_NET_INCOME_2025 = [
+    ("user", "What was Apple's net income in fiscal 2025?"),
+    ("assistant", "**Net income** · apple-sec-10k.pdf\n- **FY2025: $112,010 million** "
+                  "(apple-sec-10k.pdf, p.32)"),
 ]
 EMPLOYEES = [
     ("user", "How many people did Microsoft employ as of June 30, 2024?"),
@@ -129,8 +136,36 @@ CASES = [
     Case("follow-up", "What about the operating margin?", ["44.6%"], "calculation", REVENUE_2024),
     Case("follow-up", "And Dynamics?", ["6,481"], "calculation", LINKEDIN_2024),
     Case("follow-up", "How many of them were in the U.S.?", ["126,000"], "text", EMPLOYEES),
+    # Apple: a second company, its fiscal year ending in September, shares in thousands
+    Case("apple", "What was Apple's operating margin in fiscal 2025?", ["32.0%"], "calculation"),
+    Case("apple", "What was Apple's free cash flow in fiscal 2025?", ["$98,767 million"],
+         "calculation"),
+    Case("apple", "What was Apple's gross margin percentage in fiscal 2025?", ["46.9%"],
+         "calculation"),
+    Case("apple", "What was Apple's effective tax rate in fiscal 2025?", ["15.6%"],
+         "calculation"),
+    Case("apple", "What is Apple's current ratio?", ["0.89x"], "calculation"),
+    Case("apple", "What was Apple's diluted earnings per share in fiscal 2025?", ["$7.46"],
+         "calculation"),
+    Case("apple", "How many diluted shares did Apple have in fiscal 2025?",
+         ["15,004.7 million shares"], "calculation"),
+    Case("apple", "How did Apple's revenue change from fiscal 2024 to 2025?", ["6.4%"],
+         "calculation"),
+    Case("apple", "What was Apple's revenue in fiscal 2024?", ["$391,035 million"],
+         "calculation", absent=["245,122"]),
+    Case("apple", "What was Apple's iPhone revenue in fiscal 2025?", ["209,586"], "calculation"),
+    Case("apple", "How did Apple's Services revenue change from fiscal 2024 to 2025?",
+         ["13.5%"], "calculation"),
+    Case("apple", "How much of Apple's revenue came from the United States in fiscal 2025?",
+         ["151,790"], "calculation"),
+    Case("apple", "What were Apple's Greater China net sales in fiscal 2025?", ["64,377"]),
+    Case("apple", "How many full-time equivalent employees did Apple have at the end of "
+         "fiscal 2025?", ["166,000"], "text"),
+    Case("apple", "Who is Apple's independent auditor?", ["Ernst & Young"], "text"),
+    Case("apple", "And in 2024?", ["$93,736 million"], "calculation", APPLE_NET_INCOME_2025),
     # Nothing to answer from: must say so, not answer with another filing's figures
-    Case("refusal", "What was Apple's revenue in fiscal 2024?", absent=["245,122"], refusal=True),
+    Case("refusal", "What was Tesla's revenue in fiscal 2024?", absent=["245,122", "391,035"],
+         refusal=True),
     Case("refusal", "What was Microsoft's revenue in fiscal 2030?", absent=["245,122"],
          refusal=True),
 ]

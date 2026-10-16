@@ -135,6 +135,78 @@ def test_page_scale(text, expected):
     assert page_scale(text) == expected
 
 
+# Apple's statements, as pypdf extracts them: each column's date on two lines
+APPLE_INCOME = """Apple Inc.
+CONSOLIDATED STATEMENTS OF OPERATIONS
+(In millions, except number of shares, which are reflected in thousands, and per-share amounts)
+Years ended
+September 27,
+2025
+September 28,
+2024
+September 30,
+2023
+Net sales:
+   Products $ 307,003 $ 294,866 $ 298,085
+   Services  109,158  96,169  85,200
+Total net sales  416,161  391,035  383,285
+Net income $ 112,010 $ 93,736 $ 96,995
+Shares used in computing earnings per share:
+Diluted  15,004,697  15,408,095  15,812,547
+"""
+
+
+def test_header_years_reads_one_year_per_line():
+    lines = APPLE_INCOME.splitlines()
+    for label in ("   Products", "Total net sales", "Diluted"):
+        row = next(i for i, ln in enumerate(lines) if ln.startswith(label))
+        assert header_years(lines, row) == [2025, 2024, 2023]
+
+
+def test_header_years_ignores_a_lone_year():
+    lines = ["Fiscal", "2024", "Revenue 1,000 900"]
+    assert header_years(lines, 2) is None
+
+
+def test_verify_row_with_stacked_year_header():
+    row = verify_row(APPLE_INCOME, "Total net sales", "391,035", 2024)
+    assert row is not None
+    assert row.years == [2025, 2024, 2023]
+    assert row.values == [Decimal(416161), Decimal(391035), Decimal(383285)]
+
+
+@pytest.mark.parametrize(
+    ("note", "dollars", "shares"),
+    [
+        # Apple: shares have their own scale
+        ("(In millions, except number of shares, which are reflected in thousands, "
+         "and per-share amounts)", Decimal(1_000_000), Decimal(1_000)),
+        # Microsoft: shares follow the dollars
+        ("(In millions, except per share amounts)", Decimal(1_000_000), Decimal(1_000_000)),
+        ("(In millions, Except Per Share Amounts)", Decimal(1_000_000), Decimal(1_000_000)),
+        # Shares excepted from the scale: reported as is
+        ("(In thousands, except share and per share data)", Decimal(1_000), Decimal(1)),
+        ("(in thousands, except shares)", Decimal(1_000), Decimal(1)),
+        ("(In millions, except per share amounts; shares in thousands)",
+         Decimal(1_000_000), Decimal(1_000)),
+    ],
+)
+def test_page_scale_for_share_counts(note, dollars, shares):
+    assert page_scale(note) == dollars
+    assert page_scale(note, "shares") == shares
+    assert page_scale(note, "USD/share") == dollars    # the caller ignores scale for EPS
+
+
+def test_apple_share_counts_are_in_thousands():
+    def mapper(pages):
+        return [RowMapping(metric="diluted_shares", page=0, label="Diluted",
+                           value="15,004,697", fiscal_year=2025)]
+
+    facts = extract_facts({0: APPLE_INCOME}, "apple.pdf", "public", mapper=mapper)
+    by_year = {f.fiscal_year: f.value for f in facts}
+    assert by_year[2025] == Decimal(15_004_697_000)
+
+
 # ---------------------------------------------------------------------------
 # Verifying a mapping against the page
 # ---------------------------------------------------------------------------
@@ -467,3 +539,18 @@ def test_a_database_from_before_breakdowns_is_carried_over(tmp_path, monkeypatch
     assert financials.load_facts(["alice"]) == [_fact()]
     tables = sqlite3.connect(db).execute("SELECT name FROM sqlite_master").fetchall()
     assert ("facts",) not in tables
+
+
+def test_verify_row_ignores_a_footnote_marker_in_the_label():
+    page = APPLE_INCOME.replace("   Services  109,158", "   Services (1)  109,158")
+    row = verify_row(page, "Services (1)", "109,158", 2025)
+    assert row is not None
+    assert row.values == [Decimal(109158), Decimal(96169), Decimal(85200)]
+
+
+def test_breakdown_pages_include_net_sales_by_country():
+    countries = ("The following tables show net sales for countries that individually "
+                 "accounted for 10% or more of the respective totals (in millions):\n"
+                 "2025 2024 2023\nU.S. $ 151,790 $ 142,196 $ 138,573\n"
+                 "China (1)  64,377  66,952  72,559\n")
+    assert list(financials.breakdown_pages({7: countries})) == [7]

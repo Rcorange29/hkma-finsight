@@ -130,3 +130,13 @@ def test_an_answer_that_fails_twice_carries_a_warning(monkeypatch):
 def test_page_numbers_are_shown_the_way_pdf_viewers_count(index, shown):
     from financials import page_number
     assert page_number(index) == shown
+
+
+def test_excerpts_drop_the_filings_own_page_footer():
+    text = ("Greater China  64,377  (4) %  66,952\n"
+            "Apple Inc. | 2025 Form 10-K | 22\n"
+            "Japan  28,703")
+    assert rag.strip_page_footers(text) == "Greater China  64,377  (4) %  66,952\n\nJapan  28,703"
+    # Ordinary lines with a pipe or "Form 10-K" stay
+    kept = "See Part II | Item 8 of this Form 10-K for details."
+    assert rag.strip_page_footers(kept) == kept

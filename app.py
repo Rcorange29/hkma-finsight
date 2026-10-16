@@ -121,8 +121,7 @@ if _auth_configured():
             "Upload 10-K filings and ask questions about them. Every answer cites "
             "the page it came from, and figures that aren't in the filing are never "
             "guessed.\n\n"
-            "A sample filing (Microsoft FY2024 10-K) is ready to query as soon as "
-            "you sign in."
+            "Sample filings are ready to query as soon as you sign in."
         )
         st.button("Sign in or create an account", on_click=st.login, type="primary")
         st.stop()

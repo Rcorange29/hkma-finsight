@@ -461,6 +461,8 @@ def _store_parts():
         (["operating_margin"], "Intelligent Cloud",
          (["segment_operating_margin"], ["Intelligent Cloud"])),
         (["revenue"], "United States", (["geographic_revenue"], ["United States"])),
+        (["revenue"], "U.S.", (["geographic_revenue"], ["United States"])),
+        (["revenue"], "US", (["geographic_revenue"], ["United States"])),
         (["revenue"], "Dynamics", (["product_revenue"], ["Dynamics products and cloud services"])),
         # Too vague: three product lines have "cloud services" in their names
         (["revenue"], "cloud services", None),
@@ -506,3 +508,12 @@ def test_financials_api_lists_breakdown_figures(client):
     cloud = next(f for f in figures if f["segment"] == "Intelligent Cloud"
                  and f["metric"] == "segment_revenue")
     assert (cloud["name"], cloud["display"]) == ("Segment revenue", "$105,362 million")
+
+
+@pytest.mark.parametrize("printed", ["U.S.", "US", "USA", "U.S.A.", "United States"])
+def test_part_words_read_country_abbreviations(printed):
+    assert router._part_words(printed) == {"united", "states"}
+
+
+def test_part_words_leave_the_word_us_alone():
+    assert "united" not in router._part_words("revenue from us")
