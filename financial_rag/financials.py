@@ -639,6 +639,63 @@ def align_balance_years(facts: list[Fact]) -> list[Fact]:
             for f in facts]
 
 
+def row_printing(
+    pages: dict[int, str], metric: str, expected: dict[int, set[Decimal]],
+    owner: str, source_file: str,
+) -> list[Fact]:
+    """
+    The figures of the one statement row that prints the given values, or [].
+
+    `expected` holds a line item's values by fiscal year, as XBRL reports them.
+    When XBRL contradicts the row the model chose (Realty Income's "Net income"
+    before noncontrolling interests, where XBRL reports "Net income attributable
+    to the Company"), the right row is usually on the same pages. A row qualifies
+    if its label fits the line item and, in every year XBRL reports, it prints
+    XBRL's value. Statements that print an expense as a deduction ("Income taxes
+    (85,346)") differ from XBRL only in sign; XBRL's sign is kept.
+
+    Balance sheet columns may be dated a year after the year they close (see
+    align_balance_years), so both namings are tried. If rows with different
+    values qualify, none is chosen.
+    """
+    item = LINE_ITEMS[metric]
+    shifts = (0, -1) if item.statement == "balance" else (0,)
+    found: dict[tuple[Decimal, ...], tuple[int, str, str, list[int], Decimal]] = {}
+    for number, text in pages.items():
+        scale = Decimal(1) if item.unit == "USD/share" else page_scale(text, item.unit)
+        if scale is None:
+            continue
+        lines = [ln.rstrip() for ln in text.splitlines()]
+        for i, line in enumerate(lines):
+            label, values = split_row(line)
+            if not values or not PRINTED_AS[metric].search(label):
+                continue
+            printed_years = header_years(lines, i)
+            if not printed_years or len(values) < len(printed_years):
+                continue
+            columns = [v * scale for v in values[-len(printed_years):]]
+            for shift in shifts:
+                by_year = dict(zip((y + shift for y in printed_years), columns, strict=True))
+                checked = {y: v for y, v in by_year.items() if expected.get(y)}
+                if checked and all(abs(v) in {abs(x) for x in expected[y]}
+                                   for y, v in checked.items()):
+                    found.setdefault(tuple(columns), (number, label, line.strip(), by_year))
+    if len(found) != 1:
+        return []
+    [(page, label, excerpt, by_year)] = found.values()
+
+    # XBRL's sign, where only the sign differs: in every year it reports, or none
+    flipped = [v not in expected[y] for y, v in by_year.items() if expected.get(y) and v]
+    if any(flipped) and not all(flipped):
+        return []
+    sign = -1 if any(flipped) else 1
+    return [
+        Fact(owner, source_file, metric, year, abs(v) if item.magnitude else v * sign,
+             item.unit, label, page, excerpt, xbrl="match" if expected.get(year) else "")
+        for year, v in by_year.items()
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Breakdowns: segments, geography, product lines
 # ---------------------------------------------------------------------------
@@ -949,7 +1006,8 @@ def extract_and_store(
     Old figures are cleared even if extraction fails, so a replaced filing never
     keeps the previous version's numbers. When `company` (the registrant on the
     cover page) is an SEC filer, the figures are checked against its XBRL data:
-    confirmed ones are marked, contradicted ones dropped (see xbrl.py).
+    confirmed ones are marked, contradicted ones dropped or re-read from the row
+    that prints XBRL's values (see xbrl.py).
     """
     replace_facts(owner, source_file, [])
     facts = extract_facts(pages, source_file, owner)
@@ -962,7 +1020,7 @@ def extract_and_store(
     if facts:
         from financial_rag import xbrl  # local import: xbrl imports this module
 
-        report = xbrl.crosscheck(facts, company, cik)
+        report = xbrl.crosscheck(facts, company, cik, statement_pages(pages))
         print(xbrl.summary(report, source_file))
         facts = report.facts
     replace_facts(owner, source_file, facts)
