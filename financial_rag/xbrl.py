@@ -66,8 +66,10 @@ _ANNUAL_DAYS = range(350, 380)      # 52/53-week years included
 MATCH, MISMATCH, ABSENT = "match", "mismatch", "absent"
 
 
-def annual_values(facts_json: dict, metric: str, fiscal_year: int) -> set[Decimal]:
-    """Every value 10-K XBRL reports for a line item's fiscal year (restatements too)."""
+def annual_values(facts_json: dict, metric: str, fiscal_year: int,
+                  accession: str | None = None) -> set[Decimal]:
+    """Every value 10-K XBRL reports for a line item's fiscal year (restatements too),
+    or only those one filing reported, given its accession number."""
     item = LINE_ITEMS[metric]
     gaap = facts_json.get("facts", {}).get("us-gaap", {})
     flow = item.statement in ("income", "cash")
@@ -75,6 +77,8 @@ def annual_values(facts_json: dict, metric: str, fiscal_year: int) -> set[Decima
     for tag in TAGS.get(metric, ()):
         for row in gaap.get(tag, {}).get("units", {}).get(_UNITS[item.unit], []):
             if not str(row.get("form", "")).startswith("10-K"):
+                continue
+            if accession is not None and row.get("accn") != accession:
                 continue
             end = date.fromisoformat(row["end"])
             if end.year != fiscal_year:

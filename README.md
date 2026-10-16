@@ -99,6 +99,7 @@ relative paths.
 | `usage.py` | Usage limits: questions and uploads per user per month, questions per minute, and a daily cap across all users. |
 | `edgar.py` | SEC EDGAR client: ticker and company lookup, filings, XBRL company facts; identified, rate-limited and cached. |
 | `xbrl.py` | Checks each extracted figure against the company's XBRL data: matches are marked, contradictions dropped. |
+| `eval_xbrl.py` | Benchmark generated from XBRL for any tickers: fetches each latest 10-K, asks for reported and derived figures, scores against the SEC's values. |
 | `app.py` | Streamlit chat UI with expandable source citations and a sidebar for uploading PDFs. |
 | `evaluate.py` | Optional RAGAs evaluation (faithfulness, answer relevancy) with a before/after comparison table. |
 | `config.py` | The models used: `CHAT_MODEL` for every language-model call, the embedding model and the reranker. |
@@ -706,6 +707,7 @@ Three evaluations, each answering a different question:
 | --- | --- | --- |
 | `eval_answers.py` | Whether final answers are right, end to end, across every route | ~$0.03 |
 | `eval_retrieval.py` | Whether search puts the right passage in front of the model | ~$0.15 |
+| `eval_xbrl.py` | Whether calculated answers match the SEC's XBRL values, for any list of companies | ~$0.03 per new company |
 | `evaluate.py` (optional) | RAGAs faithfulness and relevancy of text answers, judged by an LLM | 28 answers plus RAGAs judge calls (not measured) |
 
 `eval_answers.py` is the one to run after a change. It scores every route against
@@ -785,6 +787,45 @@ customers it mentions.
 Per question, the median is 6.9 seconds and about 16,000 input tokens, and the mean cost
 is about $0.001. Most input tokens are cached by OpenAI, which is why the cost is lower
 than the token count suggests.
+
+### Any company, checked against XBRL
+
+```bash
+python -m financial_rag.eval_xbrl                  # AAPL MSFT NVDA GOOGL KO JNJ
+python -m financial_rag.eval_xbrl WMT JPM          # any tickers
+```
+
+`eval_answers.py` needs every expected answer checked by hand, so it covers two filings.
+This one needs none:
+1. It fetches each company's latest 10-K from EDGAR into a store of its own
+   (`chroma_db/eval_xbrl/`).
+2. It asks for six reported figures and four derived ones: operating and net margin, free
+   cash flow, and current ratio.
+3. Each expected answer is the company's own XBRL value from that filing, formatted the way
+   the engine formats it. Derived metrics use the engine's formulas with XBRL inputs.
+
+All the companies share one store, so naming the company in each question also tests
+choosing the right filing. A question is generated only when XBRL has every value it needs.
+
+First run, six companies, 58 questions:
+
+| | Correct | Route | Cited |
+| --- | --- | --- | --- |
+| Apple, Microsoft (FY2026), NVIDIA, Alphabet | 40/40 | 40/40 | 40/40 |
+| Coca-Cola | 7/10 | 7/10 | 8/10 |
+| Johnson & Johnson | 7/8 | 6/8 | 7/8 |
+| **All** | **54/58** | **53/58** | **55/58** |
+
+NVIDIA and Alphabet had never been tested. The misses are real extraction gaps, and the XBRL
+check is why none of them became a wrong number:
+- **Coca-Cola net income.** Coca-Cola prints "Consolidated Net Income" (13,137) above "Net
+  Income Attributable to Shareowners" (13,107). The extraction took the consolidated line,
+  which includes minority owners' share. XBRL reports the attributable one, so the check
+  dropped all three years, and net income and net margin weren't calculated.
+- **Coca-Cola capital expenditures** weren't mapped, though the row is on the cash-flow
+  statement.
+- **Johnson & Johnson net income.** "Net earnings" and "Net earnings from continuing
+  operations" tied in verification, so neither was used.
 
 ### Answer faithfulness (RAGAs, optional)
 
