@@ -61,6 +61,14 @@ def _md(text: str) -> str:
     return text.replace("$", "\\$")
 
 
+def _doc_stats(doc: dict) -> str:
+    """'155 chunks · 66 figures': figures feed the calculation engine."""
+    stats = f"{doc['chunks']} chunks"
+    if doc.get("figures"):
+        stats += f" · {doc['figures']} figures"
+    return stats
+
+
 def _found_by(retrieval: dict | None) -> str:
     """One line on how a cited chunk was retrieved, e.g. "semantic + keyword match"."""
     if not retrieval:
@@ -141,7 +149,7 @@ with st.sidebar:
                     )
                     response.raise_for_status()
                     info = response.json()
-                    st.success(f"Indexed {info['source_file']} ({info['chunks']} chunks)")
+                    st.success(f"Indexed {info['source_file']} ({_doc_stats(info)})")
                 except Exception as exc:
                     st.error(f"{upload.name}: {_error_detail(exc)}")
 
@@ -157,13 +165,13 @@ with st.sidebar:
     st.caption("Your filings")
     if own:
         for doc in own:
-            st.markdown(f"- **{doc['source_file']}** — {doc['chunks']} chunks")
+            st.markdown(f"- **{doc['source_file']}** — {_doc_stats(doc)}")
     else:
         st.info("You haven't uploaded any filings yet.")
     if shared:
         st.caption("Sample filings (available to everyone)")
         for doc in shared:
-            st.markdown(f"- **{doc['source_file']}** — {doc['chunks']} chunks")
+            st.markdown(f"- **{doc['source_file']}** — {_doc_stats(doc)}")
 
 # Render existing chat history
 for msg in st.session_state.messages:

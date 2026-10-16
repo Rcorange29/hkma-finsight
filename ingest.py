@@ -9,6 +9,9 @@ Every chunk carries an `owner`:
 
 api.py reuses ingest_file() to add user-uploaded PDFs one at a time.
 
+Each file's financial statements are also extracted into structured figures
+(see financials.py) for the deterministic analysis engine.
+
 Chunking strategy:
   - Token-aware splitting via tiktoken (cl100k_base), 1024 tokens / 128 overlap.
   - Table boundary protection: consecutive lines that look like financial table
@@ -26,6 +29,8 @@ from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+import financials
 
 load_dotenv()
 
@@ -150,18 +155,21 @@ def open_vectorstore() -> Chroma:
 
 def ingest_file(pdf_path: Path, owner: str = PUBLIC_OWNER) -> int:
     """
-    Chunk and embed one PDF into the store, returning the number of chunks added.
+    Chunk and embed one PDF into the store, returning the number of chunks added,
+    then extract its financial statements into structured figures.
 
-    Chunks previously ingested from a file with the same name and owner are
-    deleted first, so re-ingesting (or re-uploading) a filing replaces it instead
-    of duplicating every passage in retrieval results. Other owners' files of the
-    same name are untouched.
+    Chunks and figures previously ingested from a file with the same name and
+    owner are replaced, so re-ingesting (or re-uploading) a filing never
+    duplicates passages or keeps stale numbers. Other owners' files of the same
+    name are untouched.
     """
     docs = load_pdf(pdf_path, owner)
     if not any(doc.page_content.strip() for doc in docs):
         raise ValueError(
             f"{pdf_path.name} has no extractable text (scanned PDFs need OCR first)."
         )
+    # Copy the page text first: split_documents rewrites table newlines in place.
+    pages = {doc.metadata["page"]: doc.page_content for doc in docs}
     chunks = split_documents(docs)
 
     vectorstore = open_vectorstore()
@@ -173,6 +181,13 @@ def ingest_file(pdf_path: Path, owner: str = PUBLIC_OWNER) -> int:
         vectorstore.delete(ids=stale)
     print(f"Embedding {len(chunks)} chunks from {pdf_path.name} …")
     vectorstore.add_documents(chunks)
+
+    # Figures are an extra: if extraction fails, text Q&A still works, and the
+    # analysis engine reports the figures as missing rather than guessing.
+    try:
+        financials.extract_and_store(pages, pdf_path.name, owner)
+    except Exception as exc:
+        print(f"Warning: financial figure extraction failed for {pdf_path.name}: {exc}")
     return len(chunks)
 
 
@@ -190,18 +205,23 @@ def list_documents(owner: str) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def pdf_jobs() -> list[tuple[Path, str]]:
+    """Every PDF under data/ with its owner: public samples, then each user's uploads."""
+    jobs = [(p, PUBLIC_OWNER) for p in sorted(DATA_DIR.glob("*.pdf"))]
+    if USERS_DIR.exists():
+        for user_dir in sorted(p for p in USERS_DIR.iterdir() if p.is_dir()):
+            jobs += [(p, user_dir.name) for p in sorted(user_dir.glob("*.pdf"))]
+    return jobs
+
+
 def main():
     if not DATA_DIR.exists():
         DATA_DIR.mkdir(parents=True)
         print(f"Created {DATA_DIR.resolve()} — place your 10-K PDF files there and re-run.")
         return
 
-    # Public sample filings, then each user's uploads under their own owner, so
-    # rebuilding the store from scratch restores everything with its access.
-    jobs = [(p, PUBLIC_OWNER) for p in sorted(DATA_DIR.glob("*.pdf"))]
-    if USERS_DIR.exists():
-        for user_dir in sorted(p for p in USERS_DIR.iterdir() if p.is_dir()):
-            jobs += [(p, user_dir.name) for p in sorted(user_dir.glob("*.pdf"))]
+    # Rebuilding the store from scratch restores everything with its access.
+    jobs = pdf_jobs()
     if not jobs:
         raise FileNotFoundError(f"No PDF files found in {DATA_DIR.resolve()}")
     for pdf_path, owner in jobs:
