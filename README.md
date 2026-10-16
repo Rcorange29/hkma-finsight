@@ -94,7 +94,7 @@ relative paths.
 | `rag.py` | Hybrid retrieval, score-threshold filtering, cross-encoder reranking, prompting. Exposes `query()`. |
 | `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
 | `eval_retrieval.py` | Retrieval benchmark: three pipeline configurations on 72 questions, scored on whether the right passage is retrieved. |
-| `eval_answers.py` | End-to-end benchmark: 47 questions on two companies' filings through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
+| `eval_answers.py` | End-to-end benchmark: 51 questions on two companies' filings through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
 | `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `POST /filings` (fetch by ticker), `GET /jobs/{id}`, `GET /documents`, `GET /financials`, `GET /usage`, `GET /health`. |
 | `usage.py` | Usage limits: questions and uploads per user per month, questions per minute, and a daily cap across all users. |
 | `edgar.py` | SEC EDGAR client: ticker and company lookup, filings, XBRL company facts; identified, rate-limited and cached. |
@@ -386,8 +386,20 @@ two companies' passages, and the model would have to guess which figure to give.
 - **Naming a company narrows the search.** The planner copies the company a question
   names ("Acme's risks" → "Acme"; a product such as "Azure" gives "Microsoft"). Code then
   matches that name to a filing by the distinctive words in its company and file names.
-  Both routes then use only that filing: the analysis engine's figures, and both halves
-  of hybrid retrieval. Names that match no filing, or several, narrow nothing.
+  Both routes then use only that company's filings: the analysis engine's figures, and
+  both halves of hybrid retrieval.
+- **Comparisons name several.** The planner returns every company a question compares
+  ("Apple vs Microsoft operating margin" → ["Apple", "Microsoft"]; "How does Microsoft
+  compete with Google?" → only Microsoft, since Google is just mentioned). Each company's
+  figures are calculated from its own filing, and a comparison line leads the answer,
+  highest first:
+  `Compared · Operating margin: Microsoft Corporation 44.6% (FY2024) · Apple Inc. 32.0%
+  (FY2025) (each company's latest fiscal year)`. The latest year all of them have is
+  compared, or each one's latest when they share none, since fiscal years end on
+  different dates. A text comparison searches each filing separately (3 chunks each for
+  two), so one company can't crowd the other out of the context. A named company with no
+  filing is said to be missing and the others are answered; if none has a filing, the
+  question is refused.
   - The planner isn't shown the filing list. Given one, gpt-4o-mini filled in a company
     for questions that named none, such as "What was net income in fiscal 2024?". With
     only extraction asked of it, the opt-in live test
@@ -728,7 +740,7 @@ marks a correct "not found in context" as unfaithful. Its packages are kept out 
 python -m financial_rag.eval_answers
 ```
 
-Runs 47 questions through `router.answer` exactly as the API does: follow-up rewriting,
+Runs 51 questions through `router.answer` exactly as the API does: follow-up rewriting,
 planning, filing choice, calculation or retrieval, reranking and the answer check. It
 scores the final answers against figures checked by hand in two filings, Microsoft's
 FY2024 10-K and Apple's FY2025 10-K, both loaded, so a question that names no company is
@@ -747,6 +759,8 @@ The groups:
 - 4 follow-ups with conversation history;
 - 16 on Apple: 9 calculations (including diluted share count, which tests the share
   scale), 3 on product and country revenue, 3 text lookups, and a follow-up;
+- 4 comparisons of Apple and Microsoft: two calculations, their auditors (text, from each
+  filing), and one naming Tesla, which has no filing (answered for Microsoft, saying so);
 - 2 that should be refused: Tesla's revenue (no filing) and Microsoft's FY2030 revenue.
 
 It also reports latency, gpt-4o-mini tokens and an estimated cost per question.
@@ -757,6 +771,7 @@ It also reports latency, gpt-4o-mini tokens and an estimated cost per question.
 | After the fixes below (two runs) | 27/27 | 27/27 | 27/27 | 27/27 |
 | With breakdowns, 31 questions (two runs) | **31/31** | **31/31** | **31/31** | **31/31** |
 | With Apple, 47 questions (two runs) | **46/47** | **47/47** | **47/47** | **46/47** |
+| HTML samples and comparisons, 51 questions | **51/51** | **51/51** | **51/51** | **51/51** |
 
 Adding Apple's 10-K exposed four problems that one company had hidden:
 - **No figures at all.** Apple's statements put each column's date on two lines

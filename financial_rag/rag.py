@@ -428,11 +428,12 @@ def retrieve_and_rerank(
     keyword: bool | None = None,
     filing: tuple[str, str] | None = None,
     reranker: str | None = None,
+    top_k: int = TOP_K,
 ) -> list:
     """
     Hybrid retrieval for the chunks the owner may see; see the module docstring.
 
-    Returns up to TOP_K chunks, best first. Each is a copy of the stored chunk
+    Returns up to `top_k` chunks, best first. Each is a copy of the stored chunk
     whose metadata["retrieval"] records how it was found: chunk_id, matched_by
     ("semantic" and/or "keyword"), each search's rank and score, the query terms
     it matched, the cross-encoder score, and which reranker set the final order
@@ -507,7 +508,7 @@ def retrieve_and_rerank(
             used = "llm"
 
     out = []
-    for cid in ranked[:TOP_K]:
+    for cid in ranked[:top_k]:
         doc = docs[cid]
         info = {**trace[cid], "rerank_score": round(ce[cid], 4), "reranker": used}
         if cid in llm_ranks:
@@ -523,12 +524,31 @@ def retrieve_and_rerank(
 # Public API
 # ---------------------------------------------------------------------------
 
+def per_filing_k(count: int) -> int:
+    """Chunks retrieved from each of `count` filings compared: enough for each to
+    be represented, without crowding the prompt (3 each for two, 2 each for more)."""
+    return max(2, -(-(TOP_K + 1) // count))
+
+
 def query(
-    question: str, owner: str | None = None, filing: tuple[str, str] | None = None
+    question: str, owner: str | None = None, filing: tuple[str, str] | None = None,
+    filings: list[tuple[str, str]] | None = None,
 ) -> RAGResponse:
-    """Answer from the owner's filings and the samples, or from one `filing` only."""
+    """
+    Answer from the owner's filings and the samples, or from one `filing` only.
+
+    `filings` (a comparison) searches each of several filings separately, so a
+    question about two companies gets context from both rather than whichever
+    one ranks higher.
+    """
     vectorstore = _load_vectorstore()
-    top_docs = retrieve_and_rerank(question, vectorstore, owner, filing=filing)
+    if filings:
+        k = per_filing_k(len(filings))
+        top_docs = [doc for one in filings
+                    for doc in retrieve_and_rerank(question, vectorstore, owner, filing=one,
+                                                   top_k=k)]
+    else:
+        top_docs = retrieve_and_rerank(question, vectorstore, owner, filing=filing)
 
     if not top_docs:
         return RAGResponse(

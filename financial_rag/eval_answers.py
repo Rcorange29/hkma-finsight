@@ -180,6 +180,15 @@ CASES = [
          "fiscal 2025?", ["166,000"], "text"),
     Case("apple", "Who is Apple's independent auditor?", ["Ernst & Young"], "text"),
     Case("apple", "And in 2024?", ["$93,736 million"], "calculation", APPLE_NET_INCOME_2025),
+    # Comparisons: each company's figure, from its own filing
+    Case("comparison", "Compare Apple's and Microsoft's operating margins",
+         ["32.0%", "44.6%"], "calculation"),
+    Case("comparison", "Which had higher net income in its latest fiscal year, Apple or "
+         "Microsoft?", ["$112,010 million", "$88,136 million"], "calculation"),
+    Case("comparison", "Who are Apple's and Microsoft's independent auditors?",
+         ["Ernst & Young", "Deloitte"], "text"),
+    Case("comparison", "Compare Microsoft's and Tesla's revenue",
+         ["$245,122 million", "No filing for Tesla"], "calculation"),
     # Nothing to answer from: must say so, not answer with another filing's figures
     Case("refusal", "What was Tesla's revenue in fiscal 2024?", absent=["245,122", "391,035"],
          refusal=True),
