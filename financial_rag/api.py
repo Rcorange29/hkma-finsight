@@ -6,6 +6,8 @@ api.py — FastAPI server for the RAG engine.
   GET  /documents   list your filings and the public samples
   GET  /financials  the structured figures extracted from those filings
   GET  /usage       this month's questions and uploads, against your limits
+  POST /filings     fetch a company's latest 10-K from SEC EDGAR by ticker (a job)
+  GET  /jobs/{id}   how a fetch is going: queued, running, done or failed
 
 Calculation questions (margins, ratios, growth, year-over-year changes) are
 answered by the deterministic analysis engine and return each input figure
@@ -36,7 +38,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pypdf.errors import PdfReadError
 
-from financial_rag import analysis, auth, financials, ingest, router, usage
+from financial_rag import analysis, auth, edgar, financials, ingest, jobs, router, usage
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # a 10-K PDF is typically 1-10 MB
 MAX_UPLOAD_PAGES = 500                # most 10-Ks run 80-300 pages
@@ -330,3 +332,91 @@ def upload_document(file: UploadFile, owner: str = Depends(current_owner)):
         source_file=name, chunks=chunks, figures=financials.count_facts(owner).get(name, 0),
         company=company,
     )
+
+
+# ---------------------------------------------------------------------------
+# Fetching a filing from SEC EDGAR, as a background job
+# ---------------------------------------------------------------------------
+
+# Exchange tickers: letters first, then letters, digits and a class separator
+# ("BRK.B" is filed as "BRK-B")
+_TICKER_RE = re.compile(r"[A-Z][A-Z0-9-]{0,9}")
+
+
+class FilingRequest(BaseModel):
+    ticker: str = Field(min_length=1, max_length=12)
+
+
+class JobInfo(BaseModel):
+    job_id: str
+    kind: str
+    subject: str                         # the ticker
+    state: str                           # queued | running | done | failed
+    step: str = ""                       # what a running job is doing now
+    error: str = ""
+    document: DocumentInfo | None = None   # the indexed filing, once done
+
+
+def _job_info(job: jobs.Job) -> JobInfo:
+    document = DocumentInfo.model_validate_json(job.result) if job.result else None
+    return JobInfo(job_id=job.id, kind=job.kind, subject=job.subject, state=job.state,
+                   step=job.step, error=job.error, document=document)
+
+
+def _fetch_and_ingest(ticker: str, cik: int, owner: str, step) -> str:
+    """The job: find the latest 10-K, download it, then index it like an upload."""
+    step("Finding the latest 10-K on SEC EDGAR …")
+    filing = edgar.latest_annual_report(cik)
+    if filing is None:
+        raise ValueError(f"{ticker} has no 10-K on SEC EDGAR.")
+    step(f"Downloading {filing.document} (fiscal year ended {filing.report_date}) …")
+    html = edgar.fetch_document(filing.url)
+
+    name = f"{ticker.lower()}-10k-{filing.report_date}.htm"
+    user_dir = ingest.USERS_DIR / owner
+    user_dir.mkdir(parents=True, exist_ok=True)
+    # Staged like an upload: the file only lands in data/ once it has ingested
+    with tempfile.TemporaryDirectory(dir=user_dir) as staging:
+        staged = Path(staging) / name
+        staged.write_text(html, encoding="utf-8")
+        step("Indexing the filing and checking its figures against the SEC's data …")
+        with _ingest_lock:
+            chunks = ingest.ingest_file(staged, owner, max_pages=MAX_UPLOAD_PAGES, cik=cik)
+            staged.replace(user_dir / name)
+
+    company = next(
+        (f.company for f in ingest.filings([owner]) if f.source_file == name), None
+    )
+    return DocumentInfo(
+        source_file=name, chunks=chunks, figures=financials.count_facts(owner).get(name, 0),
+        company=company or filing.company,
+    ).model_dump_json()
+
+
+@app.post("/filings", response_model=JobInfo, status_code=202)
+def fetch_filing(request: FilingRequest, owner: str = Depends(current_owner)):
+    ticker = request.ticker.strip().upper().replace(".", "-")
+    if not _TICKER_RE.fullmatch(ticker):
+        raise HTTPException(status_code=422, detail=f"{request.ticker!r} isn't a ticker.")
+    try:
+        cik = edgar.cik_for_ticker(ticker)
+    except edgar.EdgarUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if cik is None:
+        raise HTTPException(status_code=404, detail=f"No SEC filer has the ticker {ticker}.")
+    # Counted like an upload; refunded if the job fails
+    event = usage.record(owner, usage.UPLOAD)
+    job = jobs.submit(
+        owner, "fetch_10k", ticker,
+        work=lambda step: _fetch_and_ingest(ticker, cik, owner, step),
+        on_failure=lambda: usage.refund(event),
+    )
+    return _job_info(job)
+
+
+@app.get("/jobs/{job_id}", response_model=JobInfo)
+def job_status(job_id: str, owner: str = Depends(current_owner)):
+    job = jobs.get(job_id)
+    if job is None or job.owner != owner:
+        raise HTTPException(status_code=404, detail="No such job.")
+    return _job_info(job)

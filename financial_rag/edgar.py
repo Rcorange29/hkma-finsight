@@ -21,6 +21,7 @@ import os
 import re
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -133,3 +134,65 @@ def companyfacts(cik: int) -> dict:
 
 def submissions(cik: int) -> dict:
     return fetch_json("submissions", SUBMISSIONS_URL.format(cik=cik), str(cik))
+
+
+# ---------------------------------------------------------------------------
+# Filings
+# ---------------------------------------------------------------------------
+
+ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{document}"
+MAX_DOCUMENT_BYTES = 40 * 1024 * 1024     # the largest 10-K HTML runs to ~15 MB
+
+
+@dataclass(frozen=True)
+class FilingRef:
+    cik: int
+    company: str
+    form: str
+    accession: str          # 0000320193-25-000079
+    report_date: str        # the fiscal year end it reports: 2025-09-27
+    filing_date: str
+    document: str           # the primary document: aapl-20250927.htm
+
+    @property
+    def url(self) -> str:
+        return ARCHIVE_URL.format(cik=self.cik, accession=self.accession.replace("-", ""),
+                                  document=self.document)
+
+
+def latest_annual_report(cik: int) -> FilingRef | None:
+    """The company's most recent 10-K (amendments aside), or None if it has none."""
+    data = submissions(cik)
+    recent = data.get("filings", {}).get("recent", {})
+    for i, form in enumerate(recent.get("form", [])):
+        if form == "10-K" and recent["primaryDocument"][i].lower().endswith((".htm", ".html")):
+            return FilingRef(
+                cik=cik, company=data.get("name", ""), form=form,
+                accession=recent["accessionNumber"][i], report_date=recent["reportDate"][i],
+                filing_date=recent["filingDate"][i], document=recent["primaryDocument"][i])
+    return None
+
+
+def fetch_document(url: str) -> str:
+    """A filing document's text, politely, refusing anything implausibly large."""
+    global _last_request
+    agent = user_agent()
+    with _lock:
+        wait = _last_request + MIN_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            with httpx.stream("GET", url, headers={"User-Agent": agent}, timeout=120.0,
+                              follow_redirects=True) as response:
+                response.raise_for_status()
+                body = bytearray()
+                for chunk in response.iter_bytes():
+                    body += chunk
+                    if len(body) > MAX_DOCUMENT_BYTES:
+                        raise EdgarUnavailable(f"{url} is larger than "
+                                               f"{MAX_DOCUMENT_BYTES // 2**20} MB.")
+        except httpx.HTTPError as exc:
+            raise EdgarUnavailable(f"EDGAR request failed for {url}: {exc}") from exc
+        finally:
+            _last_request = time.monotonic()
+    return bytes(body).decode("utf-8", errors="replace")
