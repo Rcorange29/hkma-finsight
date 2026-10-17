@@ -66,13 +66,17 @@ STRICT RULES — follow these exactly:
    the combined figure.
 2. If a figure is not explicitly stated in the excerpts, respond with \
    "not found in context" for that specific item. Never guess or estimate.
-3. Do not add commentary, context, or assumptions beyond what is directly stated.
+3. For a question about what a filing says (its risks, strategy, policies, \
+   business), summarise what the excerpts state, point by point. Answer \
+   "not found in context" only when no excerpt addresses the question at all. \
+   Do not add commentary, context, or assumptions beyond what the excerpts state.
 4. After each claim, cite the source document and page in parentheses, \
-   e.g. (microsoft-sec-10k.pdf, p.67).
+   e.g. (microsoft-sec-10k.htm, p.67).
 5. The excerpts may come from more than one filing, each named in its Source line. \
    If more than one filing answers the question, answer for each one separately \
-   under its company or file name; never merge, combine or compare figures across \
-   filings unless the question asks you to.
+   under its company or file name; never merge or combine figures across filings. \
+   When the question asks how they compare or differ, end with the differences \
+   the excerpts themselves show, each point cited to the filing it comes from.
 
 Context excerpts:
 {context}

@@ -94,7 +94,7 @@ relative paths.
 | `rag.py` | Hybrid retrieval, score-threshold filtering, cross-encoder reranking, prompting. Exposes `query()`. |
 | `hybrid.py` | The keyword half: financial-aware tokenizer, BM25, query profile, rank fusion. Pure functions. |
 | `eval_retrieval.py` | Retrieval benchmark: three pipeline configurations on 72 questions, scored on whether the right passage is retrieved. |
-| `eval_answers.py` | End-to-end benchmark: 51 questions on two companies' filings through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
+| `eval_answers.py` | End-to-end benchmark: 52 questions on two companies' filings through the whole pipeline, scored on whether the final answer is right, routed, verified and cited. |
 | `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `POST /filings` (fetch by ticker and year), `GET /jobs/{id}`, `GET /documents`, `GET /financials`, `GET /usage`, `GET /health`. |
 | `usage.py` | Usage limits: questions and uploads per user per month, questions per minute, and a daily cap across all users. |
 | `edgar.py` | SEC EDGAR client: ticker and company lookup, filings, XBRL company facts; identified, rate-limited and cached. |
@@ -807,7 +807,7 @@ marks a correct "not found in context" as unfaithful. Its packages are kept out 
 python -m financial_rag.eval_answers
 ```
 
-Runs 51 questions through `router.answer` exactly as the API does: follow-up rewriting,
+Runs 52 questions through `router.answer` exactly as the API does: follow-up rewriting,
 planning, filing choice, calculation or retrieval, reranking and the answer check. It
 scores the final answers against figures checked by hand in two filings, Microsoft's
 FY2024 10-K and Apple's FY2025 10-K, both loaded, so a question that names no company is
@@ -826,8 +826,10 @@ The groups:
 - 4 follow-ups with conversation history;
 - 16 on Apple: 9 calculations (including diluted share count, which tests the share
   scale), 3 on product and country revenue, 3 text lookups, and a follow-up;
-- 4 comparisons of Apple and Microsoft: two calculations, their auditors (text, from each
-  filing), and one naming Tesla, which has no filing (answered for Microsoft, saying so);
+- 5 comparisons of Apple and Microsoft: two calculations, their auditors (text, from each
+  filing), how their AI risks differ (a summary of each filing, cited, where the old prompt
+  answered "not found in context"), and one naming Tesla, which has no filing (answered for
+  Microsoft, saying so);
 - 2 that should be refused: Tesla's revenue (no filing) and Microsoft's FY2030 revenue.
 
 It also reports latency, gpt-4o-mini tokens and an estimated cost per question.
@@ -839,6 +841,7 @@ It also reports latency, gpt-4o-mini tokens and an estimated cost per question.
 | With breakdowns, 31 questions (two runs) | **31/31** | **31/31** | **31/31** | **31/31** |
 | With Apple, 47 questions (two runs) | **46/47** | **47/47** | **47/47** | **46/47** |
 | HTML samples and comparisons, 51 questions | **51/51** | **51/51** | **51/51** | **51/51** |
+| With a qualitative comparison, 52 questions (two runs) | **52/52** | **52/52** | **52/52** | **52/52** |
 
 Adding Apple's 10-K exposed four problems that one company had hidden:
 - **No figures at all.** Apple's statements put each column's date on two lines
