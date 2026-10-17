@@ -70,8 +70,8 @@ _ingest_lock = threading.Lock()
 tracing.setup()
 
 app = FastAPI(
-    title="Financial Report Q&A Engine",
-    description="Ask questions about 10-K filings via RAG.",
+    title="HKMA FinSight",
+    description="Evidence-grounded financial research with page-level citations.",
     version="1.0.0",
 )
 

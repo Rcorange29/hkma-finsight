@@ -1,6 +1,6 @@
 """
-app.py — Streamlit chat interface for the Financial Report Q&A Engine, with
-sign-in and a sidebar for uploading and indexing your own 10-K PDFs.
+app.py — Streamlit chat interface for HKMA FinSight, with sign-in and a sidebar
+for uploading and indexing financial-report PDFs.
 
 Usage:
     streamlit run financial_rag/app.py
@@ -27,13 +27,13 @@ import streamlit as st
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
 
 st.set_page_config(
-    page_title="Financial Report Q&A",
+    page_title="HKMA FinSight",
     page_icon="📊",
     layout="wide",
 )
 
-st.title("📊 Financial Report Q&A Engine")
-st.caption("Ask questions about 10-K filings — powered by RAG + GPT-4o-mini")
+st.title("📊 HKMA FinSight")
+st.caption("Evidence-grounded financial intelligence with page-level citations")
 
 
 def _auth_configured() -> bool:
@@ -228,7 +228,7 @@ def _render_sources(sources: list[dict], expanded: bool) -> None:
 if _auth_configured():
     if not st.user.is_logged_in:
         st.markdown(
-            "Upload 10-K filings and ask questions about them. Every answer cites "
+            "Upload financial reports and ask questions about them. Every answer cites "
             "the page it came from, and figures that aren't in the filing are never "
             "guessed.\n\n"
             "Sample filings are ready to query as soon as you sign in."
@@ -277,7 +277,7 @@ with st.sidebar:
     st.header("Documents")
     with st.form("upload", clear_on_submit=True):
         uploads = st.file_uploader(
-            "Upload 10-K PDFs", type="pdf", accept_multiple_files=True
+            "Upload financial-report PDFs", type="pdf", accept_multiple_files=True
         )
         submitted = st.form_submit_button("Upload and index")
     if submitted and uploads:

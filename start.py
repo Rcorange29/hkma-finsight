@@ -1,5 +1,5 @@
 """
-start.py — Boot the Financial Report Q&A Engine from scratch.
+start.py — Boot HKMA FinSight from scratch.
 
 Steps:
   1. Report .env / chat-model key status (a key is only needed for answers).
@@ -225,7 +225,7 @@ def start_streamlit() -> subprocess.Popen:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Boot the Financial RAG Q&A engine.")
+    parser = argparse.ArgumentParser(description="Boot HKMA FinSight.")
     parser.add_argument(
         "--reingest",
         action="store_true",
@@ -233,7 +233,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    _print("=== Financial Report Q&A Engine — startup ===")
+    _print("=== HKMA FinSight — startup ===")
 
     check_env()
     has_pdfs = check_data()
