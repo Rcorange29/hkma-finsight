@@ -19,7 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from financial_rag import analysis, config, financials, followup, ingest, rag
+from financial_rag import analysis, config, financials, followup, ingest, rag, tracing
 from financial_rag.ingest import PUBLIC_OWNER
 
 # The planner picks from the company-wide metrics only; a part of the company
@@ -372,10 +372,17 @@ def answer(
     searches every filing, and the prompt makes the model say which filing each
     figure comes from.
     """
-    asked = rewriter(question, history) if history else question
-    result = _answer(asked, owner, source_file, planner)
-    result.question = asked
-    return result
+    with tracing.tracer.start_as_current_span("answer"):
+        tracing.note(follow_up=bool(history), filing_picked=source_file is not None)
+        if history:
+            with tracing.tracer.start_as_current_span("rewrite_follow_up"):
+                asked = rewriter(question, history)
+        else:
+            asked = question
+        result = _answer(asked, owner, source_file, planner)
+        result.question = asked
+        tracing.note(route=result.route, filings=len(result.filings), series=len(result.series))
+        return result
 
 
 def _answer(question: str, owner: str, source_file: str | None, planner) -> Answer:
@@ -386,10 +393,15 @@ def _answer(question: str, owner: str, source_file: str | None, planner) -> Answ
 
     plan = None
     if facts or (source_file is None and len(filings) > 1):
-        try:
-            plan = planner(question)
-        except Exception as exc:
-            print(f"Planner failed, answering from text: {exc}")
+        with tracing.tracer.start_as_current_span("plan"):
+            try:
+                plan = planner(question)
+            except Exception as exc:
+                print(f"Planner failed, answering from text: {exc}")
+                tracing.note(failed=True)
+            else:
+                tracing.note(route=plan.route, metrics=plan.metrics, fiscal_years=plan.fiscal_years,
+                     companies=len(plan.companies), qualified=plan.qualifier is not None)
 
     chosen: list[str] = [source_file] if source_file else []
     missing: list[str] = []
@@ -420,8 +432,11 @@ def _answer(question: str, owner: str, source_file: str | None, planner) -> Answ
         if breakdown is None:
             return _text_answer(question, owner, narrowed, note)
         metrics, parts = breakdown
-    series = analysis.analyze(facts, metrics, plan.fiscal_years, plan.year_over_year, parts,
-                              company_of(filings))
+    with tracing.tracer.start_as_current_span("calculate"):
+        series = analysis.analyze(facts, metrics, plan.fiscal_years, plan.year_over_year,
+                                  parts, company_of(filings))
+        tracing.note(metrics=metrics, series=len(series),
+             results=sum(r.value is not None for s in series for r in s.results))
 
     if not any(r.value is not None for s in series for r in s.results):
         # Nothing computable: say why, then answer from the text without arithmetic.

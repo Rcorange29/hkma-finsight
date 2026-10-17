@@ -48,6 +48,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from financial_rag import config
+from financial_rag.tracing import note, traced
 
 load_dotenv()
 
@@ -1012,6 +1013,7 @@ def count_facts(owner: str) -> dict[str, int]:
     return dict(rows)
 
 
+@traced("extract_figures")
 def extract_and_store(
     pages: dict[int, str], source_file: str, owner: str, company: str | None = None,
     cik: int | None = None,
@@ -1039,6 +1041,7 @@ def extract_and_store(
         print(xbrl.summary(report, source_file))
         facts = report.facts
     replace_facts(owner, source_file, facts)
+    note(source_file=source_file, figures=len(facts))
     return len(facts)
 
 

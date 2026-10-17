@@ -32,6 +32,7 @@ from decimal import Decimal
 
 from financial_rag import edgar
 from financial_rag.financials import LINE_ITEMS, Fact, page_number, row_printing
+from financial_rag.tracing import note, traced
 
 # Line item -> us-gaap tags that report it, most common first
 TAGS: dict[str, tuple[str, ...]] = {
@@ -190,6 +191,7 @@ class Report:
     reread: list[Fact] = field(default_factory=list)   # one figure per line item re-read
 
 
+@traced("xbrl_check")
 def crosscheck(facts: list[Fact], company: str | None, cik: int | None = None,
                pages: dict[int, str] | None = None) -> Report:
     """Mark figures XBRL confirms, and drop any it contradicts.
@@ -232,6 +234,8 @@ def crosscheck(facts: list[Fact], company: str | None, cik: int | None = None,
         if rows:
             kept = [f for f in kept if f.metric != metric or f.segment] + rows
             reread.append(rows[0])
+    note(matched=counts[MATCH], contradicted=counts[MISMATCH], absent=counts[ABSENT],
+         reread=len(reread))
     return Report(kept, counts, mismatches, cik, reread=reread)
 
 
