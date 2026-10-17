@@ -209,7 +209,14 @@ def _answer_with_docs(question: str, docs: list, problems: list[str] | None = No
         | llm
         | StrOutputParser()
     )
-    return chain.invoke(question)
+    if not tracing.listened():
+        return chain.invoke(question)
+    # A streaming answer (api.py /query/stream) shows the text as it's written
+    parts = []
+    for part in chain.stream(question):
+        parts.append(part)
+        tracing.emit("token", part)
+    return "".join(parts)
 
 
 # Figures an answer must have taken from an excerpt: comma-grouped numbers and
@@ -292,6 +299,7 @@ def answer_checked(question: str, docs: list) -> str:
     if not problems:
         return answer
     print(f"Answer failed the excerpt check, retrying: {problems}")
+    tracing.emit("retry")   # a streamed first attempt is withdrawn
     with tracing.tracer.start_as_current_span("generate"):
         tracing.note(attempt=2, excerpts=len(docs))
         answer = _answer_with_docs(question, docs, problems)
