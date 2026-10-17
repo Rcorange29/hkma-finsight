@@ -777,6 +777,34 @@ figures checked by hand. `evaluate.py` came first: it judges only text answers, 
 marks a correct "not found in context" as unfaithful. Its packages are kept out of
 `requirements.txt` and the Docker image; install `requirements-ragas.txt` to run it.
 
+### Nightly runs
+
+`.github/workflows/nightly-eval.yml` runs the benchmarks against the real models, so a
+regression from a dependency, a model update or a merge shows up the next morning:
+- **Every night** (00:00 IST): `eval_answers.py` on the two samples, about $0.08.
+- **Sundays**: `eval_xbrl.py` on its ten companies as well, about $0.40.
+
+Each step has a hard spending cap and a minimum score, and the run fails if either is
+hit (GitHub emails the person who last edited the schedule):
+
+```bash
+python -m financial_rag.eval_answers --max-cost 0.25 --min-score 0.94 --summary summary.md
+```
+
+- `--max-cost` stops before the estimated chat-model spend passes the cap (exit 3).
+  Embeddings, a few cents a run, aren't counted. A model with no price in `PRICES` is
+  refused when a cap is set.
+- `--min-score` is the share of questions that must fully pass: correct, routed,
+  verified and cited (exit 1 below it). 0.94 allows for the two text questions that
+  vary between runs.
+- `--summary` appends a Markdown table per group, the median time per step and the
+  questions that didn't pass. The workflow writes it to the run's summary page, and
+  keeps the full results as an artifact for two weeks.
+
+The workflow needs two repository secrets: `OPENAI_API_KEY` and `SEC_USER_AGENT`. It
+doesn't run on forks, and it can also be started by hand from the Actions tab, with
+the XBRL benchmark as an option.
+
 ### End-to-end answers
 
 ```bash

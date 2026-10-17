@@ -25,10 +25,16 @@ answer_eval_results.json.
 
 Usage:
     python -m financial_rag.eval_answers
+    python -m financial_rag.eval_answers --max-cost 0.25 --min-score 0.94 --summary s.md
+
+--max-cost stops before the estimated spend passes the cap (exit 3), --min-score
+fails a run in which fewer questions fully pass (exit 1), and --summary appends a
+Markdown report: what the nightly workflow uses (.github/workflows/nightly-eval.yml).
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import statistics
@@ -202,7 +208,7 @@ def _has(answer: str, wanted: str | tuple[str, ...]) -> bool:
     return any(option in answer for option in options)
 
 
-def _cost(usage: dict) -> tuple[int, int, float | None]:
+def usage_cost(usage: dict) -> tuple[int, int, float | None]:
     """Tokens in and out, and dollars (None if a model used has no price)."""
     tokens_in = tokens_out = 0
     dollars: float | None = 0.0
@@ -226,7 +232,7 @@ def run(case: Case) -> dict:
         result = router.answer(case.question, OWNER, history=list(case.history))
     seconds = time.perf_counter() - start
     text = result.answer
-    tokens_in, tokens_out, dollars = _cost(usage.usage_metadata)
+    tokens_in, tokens_out, dollars = usage_cost(usage.usage_metadata)
     correct = all(_has(text, w) for w in case.expect) and not any(a in text for a in case.absent)
     if case.refusal:
         correct = correct and any(m in text.lower() for m in REFUSAL_MARKERS)
@@ -268,12 +274,80 @@ STEPS = ["answer", "rewrite_follow_up", "plan", "calculate", "text_answer", "ret
          "generate", "check"]
 
 
-def main() -> None:
+class Budget:
+    """
+    A cap on a benchmark's spend, so a scheduled run can't cost more than planned.
+    Counts chat-model calls at PRICES; embeddings (a few cents a run) aren't
+    counted. With a cap, a model without a price is refused rather than run blind.
+    """
+
+    def __init__(self, limit: float | None):
+        self.limit = limit
+        self.spent = 0.0
+
+    def charge(self, usd: float | None) -> None:
+        if usd is None and self.limit is not None:
+            raise SystemExit(f"--max-cost needs a price for {config.CHAT_MODEL}: add it to PRICES.")
+        self.spent += usd or 0.0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.limit is not None and self.spent >= self.limit
+
+
+# Exit codes for scheduled runs
+EXIT_BELOW_SCORE = 1
+EXIT_OVER_BUDGET = 3
+
+
+def benchmark_args(description: str, argv: list[str] | None = None, extra=None):
+    """The options every benchmark takes (eval_xbrl.py adds its own via `extra`)."""
+    parser = argparse.ArgumentParser(description=description)
+    if extra:
+        extra(parser)
+    parser.add_argument("--max-cost", type=float, metavar="USD",
+                        help="stop before the estimated spend passes this")
+    parser.add_argument("--min-score", type=float, metavar="FRACTION",
+                        help="exit 1 if fewer than this share of questions fully pass")
+    parser.add_argument("--summary", type=Path, metavar="PATH",
+                        help="append a Markdown summary here ($GITHUB_STEP_SUMMARY)")
+    return parser.parse_args(argv)
+
+
+def write_summary(path: Path | None, lines: list[str]) -> None:
+    if path is not None:
+        with path.open("a", encoding="utf-8") as out:
+            out.write("\n".join(lines) + "\n\n")
+
+
+def finish(passed: int, total: int, stopped: bool, budget: Budget, min_score: float | None,
+           name: str) -> int:
+    """The exit code for a run: over budget, below the score asked for, or 0."""
+    if stopped:
+        print(f"\n{name}: stopped early: the estimated spend ${budget.spent:.3f} reached "
+              f"the ${budget.limit:.2f} cap.")
+        return EXIT_OVER_BUDGET
+    if min_score is not None and passed < min_score * total:
+        print(f"\n{name}: {passed}/{total} passed, below the {min_score:.0%} required.")
+        return EXIT_BELOW_SCORE
+    return 0
+
+
+def passed(row: dict) -> bool:
+    return row["correct"] and row["route_ok"] and row["verified"] and row["cited"]
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = benchmark_args(__doc__.split("\n\n")[0].strip(), argv)
     print(f"Model: {config.CHAT_MODEL}\n")
     spans = tracing.collect()
+    budget = Budget(args.max_cost)
     rows = []
     for case in CASES:
+        if budget.exhausted:
+            break
         row = run(case)
+        budget.charge(row["usd"])
         rows.append(row)
         mark = "ok  " if row["correct"] and row["route_ok"] else "FAIL"
         print(f"{mark} [{row['route']:<11}] {case.question[:70]}", flush=True)
@@ -286,16 +360,36 @@ def main() -> None:
           f"median {statistics.median(r['tokens_in'] for r in rows):,.0f} input tokens, "
           + _cost_line(rows))
     timings = tracing.step_timings(spans.get_finished_spans())
-    print("median time per step: " + ", ".join(
-        f"{step} {timings[step][1]:.2f} s (x{timings[step][0]})"
-        for step in STEPS if step in timings))
-    failures = [r for r in rows if not (r["correct"] and r["route_ok"] and r["verified"]
-                                        and r["cited"])]
+    steps = ", ".join(f"{step} {timings[step][1]:.2f} s (x{timings[step][0]})"
+                      for step in STEPS if step in timings)
+    print("median time per step: " + steps)
+    failures = [r for r in rows if not passed(r)]
     for r in failures:
         print(f"\n--- {r['question']}  (read as: {r['asked_as']})\n{r['answer'][:600]}")
     RESULTS_PATH.write_text(json.dumps(rows, indent=2), encoding="utf-8")
     print(f"\nResults written to {RESULTS_PATH}")
 
+    ok = sum(passed(r) for r in rows)
+    groups = {kind: [r for r in rows if r["kind"] == kind]
+              for kind in dict.fromkeys(r["kind"] for r in rows)}
+    summary = [
+        f"### Answers benchmark: {ok}/{len(CASES)} passed",
+        f"{config.CHAT_MODEL}, {_cost_line(rows) if rows else 'nothing asked'}",
+        "",
+        "| group | questions | correct | route | verified | cited |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for kind, group in groups.items():
+        counts = [sum(r[key] for r in group) for key in ("correct", "route_ok", "verified", "cited")]
+        summary.append(f"| {kind} | {len(group)} | " + " | ".join(map(str, counts)) + " |")
+    summary += ["", f"Median time per step: {steps}"]
+    if failures:
+        summary += ["", "Not passed:"] + [f"- {r['question']} (route {r['route']})"
+                                          for r in failures]
+    write_summary(args.summary, summary)
+    return finish(ok, len(CASES), len(rows) < len(CASES), budget, args.min_score,
+                  "eval_answers")
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
