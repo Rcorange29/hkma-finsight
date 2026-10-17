@@ -133,6 +133,8 @@ companies ["Apple", "Microsoft"]
 - "What was Intelligent Cloud revenue in 2024?" -> qualifier "Intelligent Cloud"
 - "What were dividends declared in fiscal 2024?" -> qualifier "declared"
 - "What were dividends paid in fiscal 2024?" -> qualifier null (that is the listed metric)
+- "How much was left in the share repurchase program?" -> text (what remains of an \
+authorization is not share_repurchases, the cash spent on repurchases in a year)
 - "What was the operating margin in fiscal 2024?" -> qualifier null
 
 Metrics:
