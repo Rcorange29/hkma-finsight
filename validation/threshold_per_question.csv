@@ -1,0 +1,35 @@
+qid,category,expected_refuse,actual_refused,gold_hit,ce_max,ce_best_page,top3_page_ce,question
+Q01,positive,False,False,True,8.814,180,180:8.814;180:8.814;184:7.432,What was the Exchange Fund investment income and investment return in 2024?
+Q02,positive,False,False,True,4.321,184,184:4.321;183:2.439;183:2.439,How much were the gains from bonds in 2024?
+Q03,positive,False,False,True,7.737,73,73:7.737;73:7.737;72:6.068,What was Hong Kong's real GDP growth in 2024?
+Q04,positive,False,False,False,5.646,100,100:5.646;100:5.646;16:-1.086,What are the maximum loan-to-value and debt-servicing ratios for property mortgages?
+Q05,positive,False,False,True,5.254,79,79:5.254;79:5.254;80:5.218,What was the consolidated total capital ratio of locally incorporated AIs at the end of 2024?
+Q06,positive,False,False,True,5.721,83,83:5.721;83:5.721;82:3.255,What is the Hong Kong dollar exchange rate band against the US dollar?
+Q07,positive,False,False,True,2.568,87,87:2.568;87:2.568;14:1.908,What happened to the Backing Ratio in 2024?
+Q08,positive,False,False,True,7.361,270,270:7.361;270:7.361;90:7.325,What was the nominal amount of outstanding Exchange Fund Bills and Notes at end-2024?
+Q09,positive,False,False,True,10.037,48,48:10.037;48:10.037;2:8.787,What are the four main functions of the HKMA?
+Q10,positive,False,False,True,8.664,69,69:8.664;69:8.664;71:8.622,Who is the Chief Executive of the Hong Kong Monetary Authority?
+Q11,positive,False,False,False,1.126,312,312:1.126;312:1.126;314:-0.055,What types of institutions are collectively called authorized institutions?
+Q12,positive-paraphrase,False,False,True,7.763,180,180:7.763;180:7.763;184:6.966,"How much money did the Exchange Fund make on its investments in 2024, and what return did that represent?"
+Q13,positive-paraphrase,False,False,True,6.806,73,73:6.806;73:6.806;72:4.819,How fast did the Hong Kong economy grow in real terms in 2024?
+Q14,positive-paraphrase,False,False,True,6.293,77,77:6.293;77:6.293;79:5.899,How well capitalised were Hong Kong banks by the end of 2024?
+Q15,positive-paraphrase,False,False,True,3.347,277,277:3.347;277:3.347;87:1.872,Did the Backing Assets comfortably cover the Monetary Base in 2024?
+N01,finance-related-absent,True,False,False,-0.055,85,85:-0.055;214:-0.708;214:-0.708,What is the size of the Federal Reserve's balance sheet (total assets) at the end of 2024?
+N02,finance-related-absent,True,False,False,-0.607,14,14:-0.607;183:-0.619;180:-1.268,What is the European Central Bank's main refinancing operations rate in 2024?
+N03,finance-related-absent,True,False,False,0.965,79,79:0.965;83:0.341;83:0.341,How much bitcoin does the HKMA hold on its balance sheet?
+N04,finance-related-absent,True,True,False,-2.004,180,180:-2.004;78:-3.274;78:-3.274,What was JPMorgan Chase's net income for 2024?
+N05,finance-related-absent,True,False,False,-0.234,7,7:-0.234;7:-0.234;166:-0.413,What are the daily trading quotas for Shanghai-Hong Kong Stock Connect?
+N06,finance-related-absent,True,True,False,-9.728,322,322:-9.728;28:-9.766;153:-9.781,What is the Bank of Japan's yield curve control target for 10-year JGBs?
+N07,non-finance,True,True,False,-3.022,25,25:-3.022;25:-3.022;76:-3.802,What will the weather be like in Hong Kong tomorrow?
+N08,non-finance,True,True,False,-10.936,51,51:-10.936;204:-10.963;133:-10.969,Can you recommend a good movie to watch this weekend?
+N09,non-finance,True,True,False,,,,Give me a recipe for spaghetti bolognese.
+N10,non-finance,True,True,False,-8.48,322,322:-8.48;322:-8.48;192:-9.079,Who won the FIFA World Cup in 2022?
+N11,non-finance,True,True,False,,,,How do I bake a chocolate cake?
+N12,related-but-insufficient,True,False,False,3.168,183,183:3.168;183:3.168;184:2.065,What was the Exchange Fund's return on Japanese equities specifically in the third quarter of 2024?
+N13,related-but-insufficient,True,False,False,2.354,5,5:2.354;5:2.354;84:2.32,What was the HKD/USD exchange rate at market close on 15 March 2024?
+N14,related-but-insufficient,True,False,False,3.662,201,201:3.662;201:3.662;68:2.519,What is the annual salary of the HKMA Chief Executive?
+N15,related-but-insufficient,True,False,False,1.739,92,92:1.739;6:1.294;193:1.095,How much did the HKMA spend on cybersecurity in 2024?
+N16,related-but-insufficient,True,False,False,1.765,190,190:1.765;188:0.994;201:-0.031,How many employees does the HKMA have in total?
+N17,chinese-offtopic,True,True,False,-8.481,70,70:-8.481;324:-9.823;122:-9.833,明天香港天气怎么样？
+N18,chinese-offtopic,True,True,False,-8.108,210,210:-8.108;290:-8.374;271:-8.443,推荐一部好看的电影吧。
+N19,chinese-offtopic,True,True,False,-8.516,210,210:-8.516;70:-8.532;228:-8.57,怎么做红烧肉？

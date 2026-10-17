@@ -1,0 +1,25 @@
+## main...origin/main
+ M .env.example
+ M README.md
+ M financial_rag/config.py
+ M financial_rag/evaluate.py
+ M financial_rag/financials.py
+ M financial_rag/followup.py
+ M financial_rag/hybrid.py
+ M financial_rag/ingest.py
+ M financial_rag/rag.py
+ M financial_rag/router.py
+ M start.py
+ M tests/test_hybrid.py
+ M tests/test_rag.py
+ M tests/test_upload.py
+?? AUDIT_REPORT.md
+?? CODEX_HANDOFF.md
+?? RETRIEVAL_VALIDATION.md
+?? financial_rag/embeddings.py
+?? financial_rag/hkma.py
+?? financial_rag/llm.py
+?? tests/test_audit_regressions.py
+?? tests/test_hkma.py
+?? tests/test_llm_embeddings.py
+?? validation/

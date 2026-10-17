@@ -191,7 +191,7 @@ def test_list_documents_shows_own_files_and_shared_samples(client, store, tmp_pa
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest, "CHROMA_DIR", tmp_path / "chroma_db")
     monkeypatch.setattr(
-        ingest, "OpenAIEmbeddings", lambda model: DeterministicFakeEmbedding(size=32)
+        ingest, "get_embeddings", lambda: DeterministicFakeEmbedding(size=32)
     )
 
 
@@ -466,7 +466,7 @@ def test_llm_rank_keeps_valid_unique_positions(monkeypatch):
             prompts.append(prompt)
             return rag._PassageRanking(ranking=[3, 3, 9, 1, 0])
 
-    monkeypatch.setattr(rag, "ChatOpenAI", FakeChat)
+    monkeypatch.setattr(rag, "get_chat_llm", lambda **kwargs: FakeChat())
     docs = [Document(page_content=f"text {i}", metadata={"source_file": "a.pdf", "page": i})
             for i in range(3)]
     assert rag.llm_rank("q?", docs) == [2, 0]

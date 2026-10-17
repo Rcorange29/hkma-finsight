@@ -36,29 +36,50 @@ from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI  # noqa: F401  (kept for back-compat/tests)
 from pydantic import BaseModel, Field
 
 from financial_rag import config, hybrid, tracing
+from financial_rag.embeddings import get_embeddings
 from financial_rag.financials import page_number
 from financial_rag.ingest import PUBLIC_OWNER
+from financial_rag.llm import LLMConfigError, get_chat_llm
 
 load_dotenv()
 
 CHROMA_DIR = Path("chroma_db")
 COLLECTION_NAME = "financial_reports"
 RETRIEVE_K = 20           # semantic candidates pulled from ChromaDB before filtering
-SCORE_THRESHOLD = 0.10    # minimum relevance score (Chroma L2-normalised scores top ~0.16)
+# Semantic relevance gate. Scales differ by embedding model:
+#   - local BGE (normalized cosine): on-topic chunks score ~0.5+, off-topic ~0.1
+#   - OpenAI cosine: scaled lower (its top scores are ~0.16)
+# Default to a higher gate for local embeddings so an off-topic question is
+# refused rather than answered; override with SCORE_THRESHOLD.
+SCORE_THRESHOLD = float(
+    os.getenv("SCORE_THRESHOLD", 0.35 if config.EMBEDDING_PROVIDER == "local" else 0.10)
+)
 KEYWORD_K = 20            # BM25 candidates
 RERANK_CANDIDATES = 30    # fused candidates the cross-encoder scores
 LLM_RERANK_CANDIDATES = 15  # of those, how many the LLM reranker orders
-RERANKER = os.getenv("RERANKER", "llm")   # "llm" or "cross-encoder"
+# Default to the local cross-encoder when no chat API key is configured, so the
+# retrieval pipeline runs fully offline; with a key, use the LLM reranker.
+# Override with RERANKER=llm|cross-encoder.
+RERANKER = os.getenv("RERANKER", "llm" if config.LLM_API_KEY else "cross-encoder")
 LLM_RERANK_TIMEOUT = 30   # seconds; on timeout the cross-encoder order is used
 TOP_K = 5                 # final chunks sent to the LLM after reranking
+# Cross-encoder relevance floor on the raw reranker logit. The cross-encoder
+# scores every question/passage pair; a chunk below this is treated as
+# irrelevant even if a low semantic score or a common keyword pulled it in, so
+# the question is refused rather than answered. On the 2024 HKMA corpus the
+# MiniLM cross-encoder gives answerable questions ~0.5+ and clear off-topic
+# ~-9 or worse; the slightly negative default keeps weakly phrased but
+# answerable questions while rejecting off-topic. Exact-value matches are
+# exempt (see retrieve_and_rerank). Override with RERANK_SCORE_FLOOR.
+RERANK_SCORE_FLOOR = float(os.getenv("RERANK_SCORE_FLOOR", -2.0))
 HYBRID_SEARCH = os.getenv("HYBRID_SEARCH", "1") != "0"
 
 SYSTEM_PROMPT = """You are a financial analyst assistant. Answer questions using ONLY \
-the retrieved 10-K excerpts provided below.
+the retrieved annual report / financial filing excerpts provided below.
 
 STRICT RULES — follow these exactly:
 1. Only report figures that appear VERBATIM in the excerpts. Do NOT compute, infer, \
@@ -67,16 +88,18 @@ STRICT RULES — follow these exactly:
 2. If a figure is not explicitly stated in the excerpts, respond with \
    "not found in context" for that specific item. Never guess or estimate.
 3. For a question about what a filing says (its risks, strategy, policies, \
-   business), summarise what the excerpts state, point by point. Answer \
-   "not found in context" only when no excerpt addresses the question at all. \
-   Do not add commentary, context, or assumptions beyond what the excerpts state.
+   business, operations or mandate), summarise what the excerpts state, point by \
+   point. A passage mentioning the topic is not sufficient: it must support \
+   the specific fact, entity, period and units requested. Otherwise answer \
+   "not found in context". Do not add commentary, context, or assumptions beyond what \
+   the excerpts state.
 4. After each claim, cite the source document and page in parentheses, \
-   e.g. (microsoft-sec-10k.htm, p.67).
-5. The excerpts may come from more than one filing, each named in its Source line. \
-   If more than one filing answers the question, answer for each one separately \
-   under its company or file name; never merge or combine figures across filings. \
-   When the question asks how they compare or differ, end with the differences \
-   the excerpts themselves show, each point cited to the filing it comes from.
+   e.g. (AR2024_E.pdf, p.67).
+5. The excerpts may come from more than one document, each named in its Source line. \
+   If more than one document answers the question, answer for each one separately \
+   under its institution or file name; never merge or combine figures across \
+   documents. When the question asks how they compare or differ, end with the \
+   differences the excerpts themselves show, each point cited to the document it comes from.
 
 Context excerpts:
 {context}
@@ -101,14 +124,14 @@ def _get_reranker():
 # LLM reranker
 # ---------------------------------------------------------------------------
 
-LLM_RERANK_PROMPT = """You are ranking excerpts from SEC 10-K filings by how well they \
-answer a question.
+LLM_RERANK_PROMPT = """You are ranking excerpts from annual reports / financial filings \
+by how well they answer a question.
 
 Question: {question}
 
 Rank the passages so the one that most directly answers the question comes first:
 - Best: the passage states the exact figure or fact asked for: the right line item, the \
-right fiscal year or date, and the right company if one is named.
+right year or date, and the right institution or company if one is named.
 - Next: passages with closely related figures, or the explanation behind them.
 - When several passages contain the figure, prefer the primary financial statement or \
 the note that reports it.
@@ -129,9 +152,9 @@ def llm_rank(question: str, docs: list) -> list[int]:
     it leaves out are missing; numbers out of range or repeated are dropped.
     """
     passages = "\n\n".join(f"[{n}] {doc_to_context(doc)}" for n, doc in enumerate(docs, 1))
-    llm = ChatOpenAI(
-        model=config.CHAT_MODEL, temperature=0, timeout=LLM_RERANK_TIMEOUT, max_retries=1
-    ).with_structured_output(_PassageRanking)
+    llm = get_chat_llm(timeout=LLM_RERANK_TIMEOUT, max_retries=1).with_structured_output(
+        _PassageRanking
+    )
     result = llm.invoke(LLM_RERANK_PROMPT.format(question=question, passages=passages))
     order: list[int] = []
     for n in result.ranking:
@@ -202,7 +225,7 @@ def _answer_with_docs(question: str, docs: list, problems: list[str] | None = No
     if problems:
         messages.append(("human", RETRY_PROMPT))
     prompt = ChatPromptTemplate.from_messages(messages)
-    llm = ChatOpenAI(model=config.CHAT_MODEL, temperature=0)
+    llm = get_chat_llm()
     chain = (
         {
             "context": RunnableLambda(lambda _: context),
@@ -213,20 +236,14 @@ def _answer_with_docs(question: str, docs: list, problems: list[str] | None = No
         | llm
         | StrOutputParser()
     )
-    if not tracing.listened():
-        return chain.invoke(question)
-    # A streaming answer (api.py /query/stream) shows the text as it's written
-    parts = []
-    for part in chain.stream(question):
-        parts.append(part)
-        tracing.emit("token", part)
-    return "".join(parts)
+    # Buffer drafts: only answer_checked may publish text after validation.
+    return chain.invoke(question)
+
+# Include whole-number counts and percentages as well as decimal amounts.
+_ANSWER_FIGURE = re.compile(r"(?<!\w)(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?!\w)")
+ABSTENTION = "Not found in context: unable to verify an answer against the retrieved excerpts."
 
 
-# Figures an answer must have taken from an excerpt: comma-grouped numbers and
-# decimals ("50,969", "11.80", "$10.3 billion"). Bare integers (years, "16%")
-# aren't checked.
-_ANSWER_FIGURE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+")
 # "(msft.pdf, p.90)", or an EDGAR HTML filing's "(microsoft-sec-10k.htm, p. 58)"
 _CITATION = re.compile(r"\(([^()]+?\.(?:pdf|html?)),\s*p\.?\s*(\d+)\)", re.IGNORECASE)
 
@@ -237,37 +254,34 @@ def _numbers(text: str) -> set[str]:
 
 
 def check_answer(answer: str, question: str, docs: list) -> list[str]:
+    """Check citation addresses and numeric presence, not semantic entailment.
+
+    Only PDF viewer page numbers are accepted. Question text is not evidence.
+    Even a successful check cannot establish entity, unit or relation support.
     """
-    What in a text answer isn't backed by the excerpts it was written from.
-    Empty when everything checks out.
+    if answer.strip().lower().rstrip(".") == "not found in context":
+        return []
+    if not answer.strip():
+        return ["Empty answer"]
 
-    - Each "(file.pdf, p.N)" or "(file.htm, p.N)" must name a retrieved excerpt, and every figure in
-      the text before it (back to the previous citation) must be printed on that
-      page or in the question.
-    - Figures with no citation after them must be printed in some excerpt.
-
-    The prompt already forbids invented figures and citations; this catches the
-    model doing it anyway, e.g. blending "Goodwill 50,969" and "$51.0 billion"
-    into "$51,969 million", or citing the wrong page for a real figure.
-    """
-    asked = _numbers(question)
-
-    # A page is cited by the number on its Source line (page_number), or by its
-    # PDF page label where that differs, e.g. a roman-numbered front section
     on_page: dict[tuple[str, str], set[str]] = {}
+    source_owners: dict[str, set] = {}
     for doc in docs:
         source = doc.metadata.get("source_file", doc.metadata.get("source"))
-        numbers = {page_number(doc.metadata.get("page")), doc.metadata.get("page_label")}
+        source_owners.setdefault(source, set()).add(doc.metadata.get("owner"))
+        numbers = {page_number(doc.metadata.get("page"))}
         for number in numbers - {None, "?"}:
             on_page.setdefault((source, str(number)), set()).update(_numbers(doc.page_content))
     anywhere = set().union(*on_page.values()) if on_page else set()
 
     problems: list[str] = []
+    if not _CITATION.search(answer):
+        problems.append("Answer has no source citation; use not found in context if unsupported")
 
     def check(text: str, printed: set[str], where: str) -> None:
         for figure in dict.fromkeys(_ANSWER_FIGURE.findall(text)):
             number = figure.replace(",", "")
-            if number not in printed and number not in asked:
+            if number not in printed:
                 problem = f"{figure} isn't printed {where}"
                 if problem not in problems:
                     problems.append(problem)
@@ -275,6 +289,8 @@ def check_answer(answer: str, question: str, docs: list) -> list[str]:
     start = 0
     for match in _CITATION.finditer(answer):
         source, page = match.group(1).strip(), match.group(2)
+        if len(source_owners.get(source, set())) > 1:
+            problems.append(f"Ambiguous document identity for {source}: multiple owners")
         cited = on_page.get((source, page))
         if cited is None:
             problem = f"({source}, p.{page}) isn't the source of any excerpt"
@@ -284,16 +300,20 @@ def check_answer(answer: str, question: str, docs: list) -> list[str]:
         else:
             check(answer[start:match.start()], cited, f"on {source} p.{page}")
         start = match.end()
-    check(answer[start:], anywhere, "in any excerpt")
+    tail = answer[start:]
+    check(tail, anywhere, "in any excerpt")
+    if start and tail.strip(" \t\r\n.*;:!?"):
+        problems.append("Text after the last citation has no source citation")
     return problems
 
 
 def answer_checked(question: str, docs: list) -> str:
     """
     Answer, check the answer against the excerpts, and retry once with the
-    problems spelled out. If the retry fails the check too, the answer goes out
-    with a warning naming what couldn't be verified, rather than as if it were.
+    problems spelled out. If both attempts fail, withhold the draft and abstain.
     """
+    if not docs:
+        return ABSTENTION
     with tracing.tracer.start_as_current_span("generate"):
         tracing.note(attempt=1, excerpts=len(docs))
         answer = _answer_with_docs(question, docs)
@@ -301,9 +321,10 @@ def answer_checked(question: str, docs: list) -> str:
         problems = check_answer(answer, question, docs)
         tracing.note(problems=len(problems))
     if not problems:
+        tracing.emit("token", answer)
         return answer
     print(f"Answer failed the excerpt check, retrying: {problems}")
-    tracing.emit("retry")   # a streamed first attempt is withdrawn
+    tracing.emit("retry")   # notify progress; rejected drafts were never published
     with tracing.tracer.start_as_current_span("generate"):
         tracing.note(attempt=2, excerpts=len(docs))
         answer = _answer_with_docs(question, docs, problems)
@@ -311,10 +332,8 @@ def answer_checked(question: str, docs: list) -> str:
         problems = check_answer(answer, question, docs)
         tracing.note(problems=len(problems), unverified=bool(problems))
     if problems:
-        answer += (
-            "\n\n⚠️ Not verified against the excerpts: " + "; ".join(problems)
-            + ". Check the cited pages before relying on these figures."
-        )
+        answer = ABSTENTION + " Not verified against the excerpts."
+    tracing.emit("token", answer)
     return answer
 
 
@@ -328,7 +347,7 @@ def _load_vectorstore() -> Chroma:
             f"ChromaDB not found at {CHROMA_DIR.resolve()}. "
             "Run `python -m financial_rag.ingest` first."
         )
-    embeddings = OpenAIEmbeddings(model=config.EMBEDDING_MODEL)
+    embeddings = get_embeddings()
     return Chroma(
         persist_directory=str(CHROMA_DIR),
         embedding_function=embeddings,
@@ -541,6 +560,16 @@ def retrieve_and_rerank(
             ranked = sorted(ranked, key=lambda cid: not exact[cid])   # stable
             used = "llm"
 
+    # Final relevance gate: if even the cross-encoder's best passage is
+    # irrelevant, the question is not answerable from the corpus — return [] so
+    # query() refuses. A chunk that contains every number the question quotes
+    # (exact[cid]) is exempt, keeping the number-first guarantee above.
+    ranked = [cid for cid in ranked if exact[cid] or ce[cid] >= RERANK_SCORE_FLOOR]
+    if not ranked:
+        tracing.note(reranker=used, returned=0, below_floor=len(candidates),
+                     rerank_floor=RERANK_SCORE_FLOOR, scoped_to_filing=filing is not None)
+        return []
+
     out = []
     for cid in ranked[:top_k]:
         doc = docs[cid]
@@ -634,7 +663,20 @@ if __name__ == "__main__":
     import sys
 
     q = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "What was the total revenue?"
-    result = query(q)
+    try:
+        result = query(q)
+    except LLMConfigError as exc:
+        # Retrieval works offline; only the answer needs a chat key. Show the
+        # evidence that was found so the pipeline is still useful to inspect.
+        print(f"\n[no chat-model key] {exc}\n")
+        vectorstore = _load_vectorstore()
+        docs = retrieve_and_rerank(q, vectorstore)
+        print("Retrieved evidence (page citations are verifiable; no answer generated):")
+        for s in build_sources(q, docs):
+            found = s["retrieval"] or {}
+            how = " + ".join(found.get("matched_by", []))
+            print(f"  - {s['source_file']} p.{s['page']} [{how}]: {s['excerpt'][:140]} …")
+        sys.exit(1)
     print(f"\nAnswer:\n{result.answer}\n")
     print("Sources:")
     for s in result.sources:

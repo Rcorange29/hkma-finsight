@@ -121,15 +121,17 @@ def test_html_filing_citations_are_checked(answer, problems):
     assert rag.check_answer(answer, "q", HTML_DOCS) == problems
 
 
-def test_figures_from_the_question_and_uncited_figures_in_excerpts_pass():
-    assert rag.check_answer("Yes, 57,582 is not in these pages.", "Where is 57,582?", DOCS) == []
-    assert rag.check_answer("Goodwill was 50,969.", "q", DOCS) == []
-    assert rag.check_answer("Goodwill was 12,345.", "q", DOCS) == [
-        "12,345 isn't printed in any excerpt"]
+def test_question_numbers_and_uncited_figures_are_not_evidence():
+    assert rag.check_answer("Yes, 57,582 is not in these pages.", "Where is 57,582?", DOCS)
+    assert rag.check_answer("Goodwill was 50,969.", "q", DOCS)
+    assert "12,345 isn't printed in any excerpt" in rag.check_answer(
+        "Goodwill was 12,345.", "q", DOCS)
 
 
-def test_years_and_whole_percentages_are_not_checked():
-    assert rag.check_answer("In fiscal 2024 the rate was 18%.", "q", DOCS) == []
+def test_years_and_whole_percentages_require_support():
+    problems = rag.check_answer("In fiscal 2024 the rate was 18%.", "q", DOCS)
+    assert "2024 isn't printed in any excerpt" in problems
+    assert "18 isn't printed in any excerpt" in problems
 
 
 def test_a_failed_check_is_retried_with_the_problems(monkeypatch):
@@ -145,12 +147,13 @@ def test_a_failed_check_is_retried_with_the_problems(monkeypatch):
     assert calls == [None, ["51,969 isn't printed on msft.pdf p.90"]]
 
 
-def test_an_answer_that_fails_twice_carries_a_warning(monkeypatch):
+def test_an_answer_that_fails_twice_is_withheld(monkeypatch):
     monkeypatch.setattr(rag, "_answer_with_docs",
                         lambda q, docs, problems=None: "It was $1,234 million (msft.pdf, p.90).")
     answer = rag.answer_checked("q", DOCS)
-    assert answer.startswith("It was $1,234 million (msft.pdf, p.90).")
-    assert "Not verified against the excerpts: 1,234 isn't printed on msft.pdf p.90" in answer
+    assert answer.startswith("Not found in context")
+    assert "1,234" not in answer
+    assert "Not verified against the excerpts" in answer
 
 
 @pytest.mark.parametrize(("index", "shown"), [(0, 1), (66, 67), ("66", 67), (None, "?"), ("?", "?")])

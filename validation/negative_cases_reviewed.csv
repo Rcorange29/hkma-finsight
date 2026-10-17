@@ -1,0 +1,20 @@
+qid,question,legacy_category,corpus_label,label_zh,answer_support_pages,reviewed_pdf_pages,rationale,expected_behavior
+N01,What is the size of the Federal Reserve's balance sheet (total assets) at the end of 2024?,finance-related-absent,insufficient,没有足够证据回答,[],"[75, 84, 85, 213, 214]",美联储命中讨论降息；资产负债表属于外汇基金，并非美联储。未找到美联储 2024 年底总资产。,拒绝给出数字；不能替换为外汇基金或香港货币基础。
+N02,What is the European Central Bank's main refinancing operations rate in 2024?,finance-related-absent,insufficient,没有足够证据回答,[],"[14, 41, 123, 180, 183]",只有主要央行降息概述及香港 Base Rate；refinancing 命中房贷安排。未找到欧洲央行主要再融资利率；原题也未指定年内日期。,说明本报告证据不足；若以后使用其他来源，还需明确日期。
+N03,How much bitcoin does the HKMA hold on its balance sheet?,finance-related-absent,insufficient,没有足够证据回答,[],"[106, 181, 213]",未检出 Bitcoin/BTC；报告的数字资产监管和金融资产类别不能证明 HKMA 比特币持仓量，也不能推出为零。,说明未找到单列持仓信息；不回答零，不将监管对象资产当成 HKMA 持仓。
+N04,What was JPMorgan Chase's net income for 2024?,finance-related-absent,insufficient,没有足够证据回答,[],"[180, 213, 314]",唯一直接机构命中为认可机构名单，非 JPMorgan Chase 集团利润表；未见 2024 净利润。,拒绝给出利润数字；银行名单仅用于说明同名命中不支持利润。
+N05,What are the daily trading quotas for Shanghai-Hong Kong Stock Connect?,finance-related-absent,insufficient,没有足够证据回答,[],"[7, 106, 149, 191]",quota 命中跨境理财通个人投资者额度，不是沪港通每日北向/南向交易额度；未检出 Stock Connect。,拒绝提供沪港通额度；不得挪用理财通、债券通或互换通数据。
+N06,What is the Bank of Japan's yield curve control target for 10-year JGBs?,finance-related-absent,insufficient,没有足够证据回答,[],"[9, 148, 153, 165, 269, 310, 322]",日本央行命中支付结算系统说明；收益率曲线命中香港发债/估值，不支持日本十年国债 YCC 目标。原题未指定日期，亦不能用外部常识补答。,说明本报告无足够证据；不猜目标或政策是否仍生效。
+N07,What will the weather be like in Hong Kong tomorrow?,non-finance,insufficient,没有足够证据回答,[],"[5, 84, 166, 226, 237]",报告讨论恶劣天气交易机制，不提供相对提问时间“明天”的香港天气预测。,拒绝天气预测；无须把恶劣天气交易政策当成答案。
+N08,Can you recommend a good movie to watch this weekend?,non-finance,insufficient,没有足够证据回答,[],[191],电影只用于理财通宣传视频说明，不支持周末电影推荐。,说明年报无法提供电影推荐。
+N09,Give me a recipe for spaghetti bolognese.,non-finance,insufficient,没有足够证据回答,[],[],全文未检出意面食谱；不存在可诚实引用为做法证据的页码。,拒绝从年报编造食谱。
+N10,Who won the FIFA World Cup in 2022?,non-finance,insufficient,没有足够证据回答,[],[322],世界杯/足球查询无命中；旧检索命中 p.322 是银行按地区分类表，其国家名和年份不证明冠军。,说明年报未提供冠军信息，不用模型常识补答。
+N11,How do I bake a chocolate cake?,non-finance,insufficient,没有足够证据回答,[],[],未检出巧克力蛋糕制作证据；支持页为空，不能制造引用。,拒绝从年报编造做法。
+N12,What was the Exchange Fund's return on Japanese equities specifically in the third quarter of 2024?,related-but-insufficient,partial,有部分证据，但不足以完整回答,[],"[180, 181, 183, 184, 185]",有 TOPIX 全年市场指数涨幅及外汇基金全年股票收益；没有日本股票第三季度的基金收益分项。市场指数不是基金组合，全年不是 Q3。,可说明已披露全年口径；必须拒绝给出所问日本 Q3 分项，不能以 TOPIX 17.7% 替代。
+N13,What was the HKD/USD exchange rate at market close on 15 March 2024?,related-but-insufficient,partial,有部分证据，但不足以完整回答,[],"[14, 83, 84]",有兑换保证区间和全年市场汇率曲线，但没有 2024-03-15 收市的精确报价。不能从低分辨率曲线读出精确收市价。,说明精确日终报价不在给定证据中；不把 7.75–7.85 区间或年底 7.764 当作该日收市价。
+N14,What is the annual salary of the HKMA Chief Executive?,related-but-insufficient,sufficient,有充分证据，可以回答,[201],"[199, 200, 201]","以本题集的 2024 年报为时间范围，Table 5 的 Chief Executive 列足以分项回答：固定薪酬 7,361、浮动薪酬 2,172、其他福利 980（HK$千，年化口径）。不能继续标成无据负题；salary 不应未经说明等同含福利总包。",明确“按 2024 年报年化口径”，分别报告固定和浮动薪酬，福利单列；若用户只要一个总薪酬数或其他年度则澄清，不把自行求和写成原文总额。
+N15,How much did the HKMA spend on cybersecurity in 2024?,related-but-insufficient,partial,有部分证据，但不足以完整回答,[],"[6, 92, 101, 195, 196, 197]",有自用网络安全措施和行政开支大类；Table 2 的 221（HK$百万，2024 Actual）是办公室及电脑设备维护，不是网络安全专用支出。未见该项独立金额。,可以说明安全措施；明确无法提供网安专用年度金额，不用设备维护或总开支替代。
+N16,How many employees does the HKMA have in total?,related-but-insufficient,ambiguous,问题本身含糊，需要澄清,[],"[188, 190, 195, 199, 200, 201, 203]","原题无日期/口径；2024 编制 1,112 不等于实际员工数。Table 4 是 2025-01-01，Senior staff Strength=15、Others Strength=1,037；不能把各列或培训人次当总人数。不存在“年报未披露人员证据”的结论。","先明确日期及实际在岗/编制口径，可提供带日期的分项。15+1,037=1,052 是人工计算而非原文直接总数，当前生成规则禁止自行计算，不能要求它逐字输出未印出的合计。"
+N17,明天香港天气怎么样？,chinese-offtopic,insufficient,没有足够证据回答,[],"[5, 166, 226, 237]",与 N07 同义：只有恶劣天气交易机制，非明日香港天气预报。,说明报告不支持明日天气预测。
+N18,推荐一部好看的电影吧。,chinese-offtopic,insufficient,没有足够证据回答,[],[191],与 N08 同类：宣传视频使用电影片段不构成电影推荐依据。,说明年报不能提供电影推荐。
+N19,怎么做红烧肉？,chinese-offtopic,insufficient,没有足够证据回答,[],[],未检出红烧肉或烹饪步骤；没有支持页，不能伪造引用。,拒绝从年报编造食谱。

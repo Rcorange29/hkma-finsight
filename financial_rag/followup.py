@@ -14,8 +14,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from financial_rag import config
-
 MAX_TURNS = 6           # most recent messages used (3 questions and their answers)
 MAX_CHARS = 1500        # per message; long calculation answers are cut
 
@@ -53,10 +51,10 @@ def standalone_question(question: str, history: list[tuple[str, str]]) -> str:
     """
     if not history:
         return question
-    from langchain_openai import ChatOpenAI
+    from financial_rag.llm import get_chat_llm
 
-    llm = ChatOpenAI(model=config.CHAT_MODEL, temperature=0, timeout=20, max_retries=1)
     try:
+        llm = get_chat_llm(timeout=20, max_retries=1)
         result = llm.with_structured_output(_Rewritten).invoke([
             ("system", REWRITE_PROMPT),
             ("human", f"Conversation so far:\n{_transcript(history)}\n\n"

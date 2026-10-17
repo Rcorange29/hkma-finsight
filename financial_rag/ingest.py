@@ -40,10 +40,11 @@ from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings  # noqa: F401  (kept for tests/back-compat)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from financial_rag import config, financials, html_filing
+from financial_rag import financials, html_filing
+from financial_rag.embeddings import get_embeddings
 from financial_rag.tracing import note, traced
 
 load_dotenv()
@@ -191,7 +192,7 @@ def open_vectorstore() -> Chroma:
     """Open the persisted store, creating it on first write if it doesn't exist."""
     return Chroma(
         persist_directory=str(CHROMA_DIR),
-        embedding_function=OpenAIEmbeddings(model=config.EMBEDDING_MODEL),
+        embedding_function=get_embeddings(),
         collection_name=COLLECTION_NAME,
     )
 
@@ -199,7 +200,7 @@ def open_vectorstore() -> Chroma:
 @traced("ingest")
 def ingest_file(
     pdf_path: Path, owner: str = PUBLIC_OWNER, max_pages: int | None = None,
-    cik: int | None = None,
+    cik: int | None = None, title: str | None = None, extract_figures: bool = True,
 ) -> int:
     """
     Chunk and embed one PDF into the store, returning the number of chunks added,
@@ -208,6 +209,16 @@ def ingest_file(
     A file longer than max_pages is rejected before anything is embedded: the
     cost of ingesting grows with its length. `cik`, when known (a filing fetched
     by ticker), names the SEC filer whose XBRL data checks the figures.
+
+    `title` overrides the company/institution name put on every chunk's metadata;
+    it is used for documents that are not SEC 10-Ks (e.g. an HKMA annual report),
+    whose cover page registrant_name() cannot read. When None, the name is read
+    from a 10-K cover page as before.
+
+    `extract_figures` runs the SEC-oriented deterministic analysis engine
+    (financials.py). It is turned off for non-SEC documents such as the HKMA
+    annual report, whose statements the engine does not model; text Q&A with
+    page citations is unaffected.
 
     Chunks and figures previously ingested from a file with the same name and
     owner are replaced, so re-ingesting (or re-uploading) a filing never
@@ -230,7 +241,7 @@ def ingest_file(
         on_page = tables.get(chunk.metadata["page"])
         if on_page:
             chunk.page_content = html_filing.with_table_headings(chunk.page_content, on_page)
-    company = registrant_name(pages.get(0, ""))
+    company = title or registrant_name(pages.get(0, ""))
     if company:
         for chunk in chunks:
             chunk.metadata["company"] = company
@@ -246,11 +257,16 @@ def ingest_file(
     vectorstore.add_documents(chunks)
 
     # Figures are an extra: if extraction fails, text Q&A still works, and the
-    # analysis engine reports the figures as missing rather than guessing.
-    try:
-        financials.extract_and_store(pages, pdf_path.name, owner, company, cik)
-    except Exception as exc:
-        print(f"Warning: financial figure extraction failed for {pdf_path.name}: {exc}")
+    # analysis engine reports the figures as missing rather than guessing. The
+    # SEC/10-K engine is skipped for non-SEC documents (e.g. HKMA annual reports).
+    if extract_figures:
+        try:
+            financials.extract_and_store(pages, pdf_path.name, owner, company, cik)
+        except Exception as exc:
+            print(f"Warning: financial figure extraction failed for {pdf_path.name}: {exc}")
+    else:
+        # A replaced non-SEC filing must not keep a previous file's figures.
+        financials.replace_facts(owner, pdf_path.name, [])
     note(source_file=pdf_path.name, pages=len(docs), chunks=len(chunks))
     return len(chunks)
 

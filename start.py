@@ -2,11 +2,14 @@
 start.py — Boot the Financial Report Q&A Engine from scratch.
 
 Steps:
-  1. Verify .env and OPENAI_API_KEY are present.
+  1. Report .env / chat-model key status (a key is only needed for answers).
   2. Ingest PDFs (skipped when chroma_db already exists; use --reingest to force).
   3. Start the FastAPI server on port 8000.
   4. Start the Streamlit UI on port 8501.
   5. Wait until both ports are accepting connections, then open the browser.
+
+Ingestion and retrieval are fully local (BGE embeddings + cross-encoder).
+Only the answer step needs ARK_API_KEY (Doubao) or OPENAI_API_KEY.
 
 Usage:
     python start.py            # skip ingestion if chroma_db exists
@@ -80,15 +83,44 @@ def _wait_for_port(host: str, port: int, label: str) -> None:
 # ---------------------------------------------------------------------------
 
 def check_env() -> None:
+    """
+    Check configuration without blocking local use.
+
+    Ingestion and retrieval run fully on the machine (local embeddings and the
+    local cross-encoder). Only the answer step calls a chat model, which needs
+    ARK_API_KEY (Doubao/Volcano Ark) or OPENAI_API_KEY. So a missing key is a
+    warning — the app still starts and the question box explains what to set.
+    """
+    has_key = bool(os.getenv("ARK_API_KEY", "").strip()) or bool(
+        os.getenv("OPENAI_API_KEY", "").strip()
+    )
     if not ENV_FILE.exists():
-        _abort(
-            f".env not found at {ENV_FILE}.\n"
-            "  Copy .env.example → .env and set OPENAI_API_KEY."
+        _print(
+            f"No .env at {ENV_FILE}. Ingestion/retrieval run locally; to get "
+            "answers, copy .env.example → .env and set ARK_API_KEY (Doubao) "
+            "or OPENAI_API_KEY."
         )
-    content = ENV_FILE.read_text()
-    if "OPENAI_API_KEY" not in content or "sk-" not in content:
-        _abort("OPENAI_API_KEY does not look set in .env.")
-    _print(".env OK.")
+        return
+    # start.py doesn't load .env itself (the child processes do), so read the
+    # key lines directly to report whether answering is configured.
+    if not has_key:
+        for line in ENV_FILE.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() in ("ARK_API_KEY", "OPENAI_API_KEY") and value.strip().strip(
+                "\"'") not in ("", "your-key-here"):
+                has_key = True
+                break
+    if not has_key:
+        _print(
+            "No ARK_API_KEY / OPENAI_API_KEY found in .env: the app starts, but "
+            "answering questions is disabled until a key is set. Ingestion and "
+            "retrieval work without it."
+        )
+        return
+    _print(".env OK (a chat-model API key is set).")
 
 
 def check_data() -> bool:

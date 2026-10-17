@@ -1,0 +1,1304 @@
+{
+  "schema_version": 1,
+  "review_date": "2026-10-18",
+  "source_file": "AR2024_E.pdf",
+  "source_pdf_sha256": "acc3cb3eb6d5289815355e84f7e27fec85bbcbaa7542e7a300f378967c367939",
+  "source_pdf_pages": 334,
+  "page_convention": "1-based physical PDF viewer pages, not printed page labels",
+  "method": "All 334 extracted pages searched per case; relevant complete pages read; table/chart visual checks recorded below. Absence means no sufficient evidence found within this review, not a proof of global nonexistence. No web, model, or API used.",
+  "visually_reviewed_pdf_pages": [
+    84,
+    183,
+    184,
+    196,
+    200,
+    201
+  ],
+  "label_definitions": {
+    "sufficient": "有充分证据，可以回答",
+    "partial": "有部分证据，但不足以完整回答",
+    "insufficient": "没有足够证据回答",
+    "ambiguous": "问题本身含糊，需要澄清"
+  },
+  "legacy_files_sha256": {
+    "validation/threshold_per_question.csv": "88aee3f4a4a1e9c9a6f079f47d763ed8408bfa4d30b654c8a7e614dc1d10ba6c",
+    "validation/retrieval_per_question.csv": "d5f6b58f7e71f40e713796d7479b21512513e75dbb521430d98110a989b2b64c"
+  },
+  "cases": [
+    {
+      "qid": "N01",
+      "question": "What is the size of the Federal Reserve's balance sheet (total assets) at the end of 2024?",
+      "legacy_category": "finance-related-absent",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        75,
+        84,
+        85,
+        213,
+        214
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 75,
+          "role": "context_only",
+          "excerpt": "US Federal Reserve (Fed)’s interest rate cuts and Mainland’s proactive economic stimulus measures, driving the Hang Seng Index to a year-high daily close of 23,100 on 7 October (Chart 4). Nevertheless"
+        },
+        {
+          "pdf_page": 213,
+          "role": "context_only",
+          "excerpt": "Exchange Fund – Balance Sheet as at 31 December 2024 Group Fund (Expressed in millions of Hong Kong dollars) Note 2024 2"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "Federal Reserve",
+          "matched_pdf_pages": [
+            75,
+            84
+          ]
+        },
+        {
+          "pattern": "\\bFed\\b",
+          "matched_pdf_pages": [
+            75
+          ]
+        },
+        {
+          "pattern": "quantitative",
+          "matched_pdf_pages": [
+            230,
+            309
+          ]
+        },
+        {
+          "pattern": "balance sheet",
+          "matched_pdf_pages": [
+            79,
+            83,
+            206,
+            210,
+            213,
+            214,
+            221,
+            224,
+            228,
+            229,
+            232,
+            233,
+            236,
+            259,
+            273,
+            277,
+            284,
+            312,
+            324,
+            325
+          ]
+        }
+      ],
+      "rationale": "美联储命中讨论降息；资产负债表属于外汇基金，并非美联储。未找到美联储 2024 年底总资产。",
+      "expected_behavior": "拒绝给出数字；不能替换为外汇基金或香港货币基础。",
+      "historical_retrieval": {
+        "actual_refused": false,
+        "ce_best_page": 85,
+        "ce_max": "-0.055"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N02",
+      "question": "What is the European Central Bank's main refinancing operations rate in 2024?",
+      "legacy_category": "finance-related-absent",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        14,
+        41,
+        123,
+        180,
+        183
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 180,
+          "role": "context_only",
+          "excerpt": "Major central banks progressively lowered their policy rates. This was positive to the investment environment. For 2024 as a "
+        },
+        {
+          "pdf_page": 14,
+          "role": "context_only",
+          "excerpt": "Backing Ratio Base Rate per USD 109.6% 4.75% Monetary Base Aggregate Balance (before Disco"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "European Central",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "\\bECB\\b",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "Eurosystem",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "refinancing",
+          "matched_pdf_pages": [
+            41,
+            123
+          ]
+        }
+      ],
+      "rationale": "只有主要央行降息概述及香港 Base Rate；refinancing 命中房贷安排。未找到欧洲央行主要再融资利率；原题也未指定年内日期。",
+      "expected_behavior": "说明本报告证据不足；若以后使用其他来源，还需明确日期。",
+      "historical_retrieval": {
+        "actual_refused": false,
+        "ce_best_page": 14,
+        "ce_max": "-0.607"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N03",
+      "question": "How much bitcoin does the HKMA hold on its balance sheet?",
+      "legacy_category": "finance-related-absent",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        106,
+        181,
+        213
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 213,
+          "role": "context_only",
+          "excerpt": "ASSETS Cash and money at call 7 207,009 195,831 202,830 190,478 Placements with banks and other financial institutions 8 182,243 206,133 130,095 155,125 Financial assets measured at fair value through"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "bitcoin",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "\\bBTC\\b",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "crypto",
+          "matched_pdf_pages": [
+            39,
+            41,
+            46,
+            47,
+            114,
+            144,
+            156,
+            174,
+            178
+          ]
+        },
+        {
+          "pattern": "virtual asset",
+          "matched_pdf_pages": [
+            115,
+            130
+          ]
+        },
+        {
+          "pattern": "digital asset",
+          "matched_pdf_pages": [
+            8,
+            12,
+            16,
+            38,
+            46,
+            92,
+            105,
+            145,
+            150,
+            151,
+            174,
+            177,
+            179
+          ]
+        }
+      ],
+      "rationale": "未检出 Bitcoin/BTC；报告的数字资产监管和金融资产类别不能证明 HKMA 比特币持仓量，也不能推出为零。",
+      "expected_behavior": "说明未找到单列持仓信息；不回答零，不将监管对象资产当成 HKMA 持仓。",
+      "historical_retrieval": {
+        "actual_refused": false,
+        "ce_best_page": 79,
+        "ce_max": "0.965"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N04",
+      "question": "What was JPMorgan Chase's net income for 2024?",
+      "legacy_category": "finance-related-absent",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        180,
+        213,
+        314
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 314,
+          "role": "context_only",
+          "excerpt": "JPMorgan Chase Bank, National Association KBC Bank N.V. KEB Hana Bank KGI B"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "JPMorgan",
+          "matched_pdf_pages": [
+            314
+          ]
+        },
+        {
+          "pattern": "J\\.?P\\.?\\s*Morgan",
+          "matched_pdf_pages": [
+            66,
+            314,
+            315
+          ]
+        },
+        {
+          "pattern": "net income",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "net profit",
+          "matched_pdf_pages": []
+        }
+      ],
+      "rationale": "唯一直接机构命中为认可机构名单，非 JPMorgan Chase 集团利润表；未见 2024 净利润。",
+      "expected_behavior": "拒绝给出利润数字；银行名单仅用于说明同名命中不支持利润。",
+      "historical_retrieval": {
+        "actual_refused": true,
+        "ce_best_page": 180,
+        "ce_max": "-2.004"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N05",
+      "question": "What are the daily trading quotas for Shanghai-Hong Kong Stock Connect?",
+      "legacy_category": "finance-related-absent",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        7,
+        106,
+        149,
+        191
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 106,
+          "role": "context_only",
+          "excerpt": "Cross-boundary WMC scheme in January, outlining enhancement measures in five major areas: product scope, individual investor quotas, investor eligibility, sale processes, and the participation of"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "Stock\\s+Connect",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "Shanghai.Hong Kong",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "quota",
+          "matched_pdf_pages": [
+            7,
+            106,
+            149
+          ]
+        }
+      ],
+      "rationale": "quota 命中跨境理财通个人投资者额度，不是沪港通每日北向/南向交易额度；未检出 Stock Connect。",
+      "expected_behavior": "拒绝提供沪港通额度；不得挪用理财通、债券通或互换通数据。",
+      "historical_retrieval": {
+        "actual_refused": false,
+        "ce_best_page": 7,
+        "ce_max": "-0.234"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N06",
+      "question": "What is the Bank of Japan's yield curve control target for 10-year JGBs?",
+      "legacy_category": "finance-related-absent",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        9,
+        148,
+        153,
+        165,
+        269,
+        310,
+        322
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 165,
+          "role": "context_only",
+          "excerpt": "Japan CSD (BOJ-NET) – Bank of Japan Financial Network System for Japanese Government Bond Services KSD – Korean Sec"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "Bank of Japan",
+          "matched_pdf_pages": [
+            165
+          ]
+        },
+        {
+          "pattern": "\\bBOJ\\b",
+          "matched_pdf_pages": [
+            165
+          ]
+        },
+        {
+          "pattern": "JGB",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "yield.curve.control",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "yield curve",
+          "matched_pdf_pages": [
+            9,
+            148,
+            153,
+            309,
+            310
+          ]
+        }
+      ],
+      "rationale": "日本央行命中支付结算系统说明；收益率曲线命中香港发债/估值，不支持日本十年国债 YCC 目标。原题未指定日期，亦不能用外部常识补答。",
+      "expected_behavior": "说明本报告无足够证据；不猜目标或政策是否仍生效。",
+      "historical_retrieval": {
+        "actual_refused": true,
+        "ce_best_page": 322,
+        "ce_max": "-9.728"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N07",
+      "question": "What will the weather be like in Hong Kong tomorrow?",
+      "legacy_category": "non-finance",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        5,
+        84,
+        166,
+        226,
+        237
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 166,
+          "role": "context_only",
+          "excerpt": "Severe Weather Trading initiative for the first time under the support of the Government and in collaboration with the HKMA and the SFC. This initiative allows the city’s securities and derivatives markets to remain open"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "weather",
+          "matched_pdf_pages": [
+            5,
+            166
+          ]
+        },
+        {
+          "pattern": "forecast",
+          "matched_pdf_pages": [
+            226,
+            237
+          ]
+        },
+        {
+          "pattern": "typhoon",
+          "matched_pdf_pages": [
+            166
+          ]
+        }
+      ],
+      "rationale": "报告讨论恶劣天气交易机制，不提供相对提问时间“明天”的香港天气预测。",
+      "expected_behavior": "拒绝天气预测；无须把恶劣天气交易政策当成答案。",
+      "historical_retrieval": {
+        "actual_refused": true,
+        "ce_best_page": 25,
+        "ce_max": "-3.022"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N08",
+      "question": "Can you recommend a good movie to watch this weekend?",
+      "legacy_category": "non-finance",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        191
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 191,
+          "role": "context_only",
+          "excerpt": "the videos featured “classic scenes” of five iconic Hong Kong movies to explain the Cross-boundary WMC framework, investor eligibility and products offered in the Northbound and Southbound Schemes, risk managem"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "movie",
+          "matched_pdf_pages": [
+            191
+          ]
+        },
+        {
+          "pattern": "cinema",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "film",
+          "matched_pdf_pages": []
+        }
+      ],
+      "rationale": "电影只用于理财通宣传视频说明，不支持周末电影推荐。",
+      "expected_behavior": "说明年报无法提供电影推荐。",
+      "historical_retrieval": {
+        "actual_refused": true,
+        "ce_best_page": 51,
+        "ce_max": "-10.936"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N09",
+      "question": "Give me a recipe for spaghetti bolognese.",
+      "legacy_category": "non-finance",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [],
+      "answer_support_pages": [],
+      "evidence": [],
+      "full_text_searches": [
+        {
+          "pattern": "spaghetti",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "bolognese",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "recipe",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "cook",
+          "matched_pdf_pages": []
+        }
+      ],
+      "rationale": "全文未检出意面食谱；不存在可诚实引用为做法证据的页码。",
+      "expected_behavior": "拒绝从年报编造食谱。",
+      "historical_retrieval": {
+        "actual_refused": true,
+        "ce_best_page": null,
+        "ce_max": ""
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N10",
+      "question": "Who won the FIFA World Cup in 2022?",
+      "legacy_category": "non-finance",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        322
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 322,
+          "role": "context_only",
+          "excerpt": "Table E Authorized Institutions: Region/Economy of Beneficial Ownership Region/Economy Licensed Banks Restrict"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "FIFA",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "World\\s+Cup",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "football",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "soccer",
+          "matched_pdf_pages": []
+        }
+      ],
+      "rationale": "世界杯/足球查询无命中；旧检索命中 p.322 是银行按地区分类表，其国家名和年份不证明冠军。",
+      "expected_behavior": "说明年报未提供冠军信息，不用模型常识补答。",
+      "historical_retrieval": {
+        "actual_refused": true,
+        "ce_best_page": 322,
+        "ce_max": "-8.48"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N11",
+      "question": "How do I bake a chocolate cake?",
+      "legacy_category": "non-finance",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [],
+      "answer_support_pages": [],
+      "evidence": [],
+      "full_text_searches": [
+        {
+          "pattern": "chocolate",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "cake",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "bake",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "recipe",
+          "matched_pdf_pages": []
+        }
+      ],
+      "rationale": "未检出巧克力蛋糕制作证据；支持页为空，不能制造引用。",
+      "expected_behavior": "拒绝从年报编造做法。",
+      "historical_retrieval": {
+        "actual_refused": true,
+        "ce_best_page": null,
+        "ce_max": ""
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N12",
+      "question": "What was the Exchange Fund's return on Japanese equities specifically in the third quarter of 2024?",
+      "legacy_category": "related-but-insufficient",
+      "legacy_expected_refuse": true,
+      "corpus_label": "partial",
+      "label_zh": "有部分证据，但不足以完整回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        180,
+        181,
+        183,
+        184,
+        185
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 183,
+          "role": "partial_support",
+          "excerpt": "TOPIX Index +17.7% MSCI Emerging Markets Index +5.1% Ha"
+        },
+        {
+          "pdf_page": 183,
+          "role": "partial_support",
+          "excerpt": "Market performance of equities is based on index price change during the year."
+        },
+        {
+          "pdf_page": 184,
+          "role": "partial_support",
+          "excerpt": "gains on equities of HK$90.9 billion (with gains of HK$21.8 billion from Hong Kong equities and HK$69.1 billion from other equities); a negative currency transl"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "Japanese",
+          "matched_pdf_pages": [
+            165
+          ]
+        },
+        {
+          "pattern": "Japan",
+          "matched_pdf_pages": [
+            28,
+            118,
+            165,
+            177,
+            279,
+            322,
+            325,
+            330
+          ]
+        },
+        {
+          "pattern": "TOPIX",
+          "matched_pdf_pages": [
+            183
+          ]
+        },
+        {
+          "pattern": "equities",
+          "matched_pdf_pages": [
+            181,
+            183,
+            184,
+            282
+          ]
+        },
+        {
+          "pattern": "third quarter",
+          "matched_pdf_pages": [
+            183
+          ]
+        }
+      ],
+      "rationale": "有 TOPIX 全年市场指数涨幅及外汇基金全年股票收益；没有日本股票第三季度的基金收益分项。市场指数不是基金组合，全年不是 Q3。",
+      "expected_behavior": "可说明已披露全年口径；必须拒绝给出所问日本 Q3 分项，不能以 TOPIX 17.7% 替代。",
+      "historical_retrieval": {
+        "actual_refused": false,
+        "ce_best_page": 183,
+        "ce_max": "3.168"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N13",
+      "question": "What was the HKD/USD exchange rate at market close on 15 March 2024?",
+      "legacy_category": "related-but-insufficient",
+      "legacy_expected_refuse": true,
+      "corpus_label": "partial",
+      "label_zh": "有部分证据，但不足以完整回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        14,
+        83,
+        84
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 83,
+          "role": "partial_support",
+          "excerpt": "within a band of HK$7.75–7.85 to US$1. The structure of the mo"
+        },
+        {
+          "pdf_page": 84,
+          "role": "partial_support",
+          "excerpt": "Overall, the Hong Kong dollar exchange market continued to function normally throughout 2024 (Chart 1). 7.70 7.75 7.80 7.85 7.90 USD/HKD Weak-sid"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "15\\s+March",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "March\\s+15",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "15/3",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "exchange rate",
+          "matched_pdf_pages": [
+            2,
+            5,
+            12,
+            14,
+            48,
+            62,
+            82,
+            83,
+            84,
+            86,
+            87,
+            190,
+            204,
+            218,
+            228,
+            236,
+            253,
+            265,
+            266,
+            277,
+            291,
+            292,
+            319,
+            332
+          ]
+        },
+        {
+          "pattern": "Market exchange rate in 2024",
+          "matched_pdf_pages": [
+            84
+          ]
+        }
+      ],
+      "rationale": "有兑换保证区间和全年市场汇率曲线，但没有 2024-03-15 收市的精确报价。不能从低分辨率曲线读出精确收市价。",
+      "expected_behavior": "说明精确日终报价不在给定证据中；不把 7.75–7.85 区间或年底 7.764 当作该日收市价。",
+      "historical_retrieval": {
+        "actual_refused": false,
+        "ce_best_page": 5,
+        "ce_max": "2.354"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N14",
+      "question": "What is the annual salary of the HKMA Chief Executive?",
+      "legacy_category": "related-but-insufficient",
+      "legacy_expected_refuse": true,
+      "corpus_label": "sufficient",
+      "label_zh": "有充分证据，可以回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        199,
+        200,
+        201
+      ],
+      "answer_support_pages": [
+        201
+      ],
+      "evidence": [
+        {
+          "pdf_page": 201,
+          "role": "answer_support",
+          "excerpt": "The remuneration packages of senior staff members in 2024 are shown in Table 5. Table 5 Remuneration packages "
+        },
+        {
+          "pdf_page": 201,
+          "role": "answer_support",
+          "excerpt": "(HK$’000) Annualised pay Fixed pay 7,361 6,325 4,247 Variable pay 2,172 1,821 1,119 Other benefitsc 980 806 630 a. Except for annu"
+        },
+        {
+          "pdf_page": 201,
+          "role": "answer_support",
+          "excerpt": "Other benefitsc 980 806 630 a. Except for annual l"
+        },
+        {
+          "pdf_page": 201,
+          "role": "answer_support",
+          "excerpt": "Except for annual leave accrued, the actual remuneration received by staff members who did not serve out a full year is annualised for the purpose of calculating the average annual package for the rank. b. The number of staff members in this table include"
+        },
+        {
+          "pdf_page": 201,
+          "role": "answer_support",
+          "excerpt": "Other benefits include provident funds or gratuity (as the case may be), medical and life insurance, and annual leave accrued during the year. The provision of these benefits varies among senior staff members, depending on individual terms of service"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "Remuneration",
+          "matched_pdf_pages": [
+            60,
+            201
+          ]
+        },
+        {
+          "pattern": "Chief Executive",
+          "matched_pdf_pages": [
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            49,
+            51,
+            52,
+            53,
+            54,
+            55,
+            57,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            75,
+            98,
+            99,
+            104,
+            108,
+            109,
+            124,
+            135,
+            139,
+            141,
+            149,
+            150,
+            156,
+            157,
+            163,
+            164,
+            175,
+            176,
+            177,
+            187,
+            191,
+            192,
+            194,
+            195,
+            201,
+            206,
+            208,
+            281,
+            283,
+            304
+          ]
+        },
+        {
+          "pattern": "Fixed pay",
+          "matched_pdf_pages": [
+            201,
+            233,
+            241
+          ]
+        },
+        {
+          "pattern": "Variable pay",
+          "matched_pdf_pages": [
+            201,
+            241
+          ]
+        }
+      ],
+      "rationale": "以本题集的 2024 年报为时间范围，Table 5 的 Chief Executive 列足以分项回答：固定薪酬 7,361、浮动薪酬 2,172、其他福利 980（HK$千，年化口径）。不能继续标成无据负题；salary 不应未经说明等同含福利总包。",
+      "expected_behavior": "明确“按 2024 年报年化口径”，分别报告固定和浮动薪酬，福利单列；若用户只要一个总薪酬数或其他年度则澄清，不把自行求和写成原文总额。",
+      "historical_retrieval": {
+        "actual_refused": false,
+        "ce_best_page": 201,
+        "ce_max": "3.662"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N15",
+      "question": "How much did the HKMA spend on cybersecurity in 2024?",
+      "legacy_category": "related-but-insufficient",
+      "legacy_expected_refuse": true,
+      "corpus_label": "partial",
+      "label_zh": "有部分证据，但不足以完整回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        6,
+        92,
+        101,
+        195,
+        196,
+        197
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 197,
+          "role": "partial_support",
+          "excerpt": "In line with the enhanced cybersecurity strategy, we strengthened our cybersecurity posture in 2024. This included an improved operating model, secured endpoints, the deployment of advanced security tools and e"
+        },
+        {
+          "pdf_page": 196,
+          "role": "partial_support",
+          "excerpt": "Maintenance of office and computer equipment 280 221 288 Financial inform"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "cyber",
+          "matched_pdf_pages": [
+            6,
+            12,
+            19,
+            20,
+            22,
+            37,
+            47,
+            92,
+            99,
+            101,
+            105,
+            109,
+            116,
+            140,
+            141,
+            147,
+            156,
+            157,
+            161,
+            171,
+            193,
+            197
+          ]
+        },
+        {
+          "pattern": "cybersecurity",
+          "matched_pdf_pages": [
+            101,
+            141,
+            193,
+            197
+          ]
+        },
+        {
+          "pattern": "information technology",
+          "matched_pdf_pages": [
+            101,
+            109,
+            195,
+            197,
+            200,
+            332
+          ]
+        },
+        {
+          "pattern": "expenditure",
+          "matched_pdf_pages": [
+            60,
+            73,
+            182,
+            194,
+            195,
+            196,
+            206,
+            210,
+            211,
+            212,
+            213,
+            217,
+            220,
+            221,
+            223,
+            224,
+            225,
+            226,
+            227,
+            229,
+            231,
+            232,
+            233,
+            234,
+            235,
+            236,
+            239,
+            243,
+            245,
+            246,
+            247,
+            248,
+            249,
+            251,
+            262,
+            275,
+            278,
+            286,
+            287,
+            290,
+            294,
+            295,
+            296,
+            297,
+            298,
+            305,
+            306,
+            307,
+            308,
+            309,
+            311,
+            317,
+            318
+          ]
+        }
+      ],
+      "rationale": "有自用网络安全措施和行政开支大类；Table 2 的 221（HK$百万，2024 Actual）是办公室及电脑设备维护，不是网络安全专用支出。未见该项独立金额。",
+      "expected_behavior": "可以说明安全措施；明确无法提供网安专用年度金额，不用设备维护或总开支替代。",
+      "historical_retrieval": {
+        "actual_refused": false,
+        "ce_best_page": 92,
+        "ce_max": "1.739"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N16",
+      "question": "How many employees does the HKMA have in total?",
+      "legacy_category": "related-but-insufficient",
+      "legacy_expected_refuse": true,
+      "corpus_label": "ambiguous",
+      "label_zh": "问题本身含糊，需要澄清",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        188,
+        190,
+        195,
+        199,
+        200,
+        201,
+        203
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 199,
+          "role": "partial_support",
+          "excerpt": "The establishment of the HKMA in 2024 was 1,112. We made continuo"
+        },
+        {
+          "pdf_page": 200,
+          "role": "partial_support",
+          "excerpt": "Table 4 Establishment and strength of the HKMA on 1 January 2025 Senior staff Others Department Func"
+        },
+        {
+          "pdf_page": 200,
+          "role": "partial_support",
+          "excerpt": "Total 16 15 1,117 1,037 * S"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "employee",
+          "matched_pdf_pages": [
+            237,
+            268
+          ]
+        },
+        {
+          "pattern": "headcount",
+          "matched_pdf_pages": [
+            195
+          ]
+        },
+        {
+          "pattern": "Establishment and strength",
+          "matched_pdf_pages": [
+            199,
+            200
+          ]
+        },
+        {
+          "pattern": "professional workforce",
+          "matched_pdf_pages": [
+            13,
+            186,
+            199
+          ]
+        },
+        {
+          "pattern": "Number of staff",
+          "matched_pdf_pages": [
+            201
+          ]
+        }
+      ],
+      "rationale": "原题无日期/口径；2024 编制 1,112 不等于实际员工数。Table 4 是 2025-01-01，Senior staff Strength=15、Others Strength=1,037；不能把各列或培训人次当总人数。不存在“年报未披露人员证据”的结论。",
+      "expected_behavior": "先明确日期及实际在岗/编制口径，可提供带日期的分项。15+1,037=1,052 是人工计算而非原文直接总数，当前生成规则禁止自行计算，不能要求它逐字输出未印出的合计。",
+      "historical_retrieval": {
+        "actual_refused": false,
+        "ce_best_page": 190,
+        "ce_max": "1.765"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N17",
+      "question": "明天香港天气怎么样？",
+      "legacy_category": "chinese-offtopic",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        5,
+        166,
+        226,
+        237
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 166,
+          "role": "context_only",
+          "excerpt": "Severe Weather Trading initiative for the first time under the support of the Government and in collaboration with the HKMA and the SFC. This initiative allows the city’s"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "weather",
+          "matched_pdf_pages": [
+            5,
+            166
+          ]
+        },
+        {
+          "pattern": "forecast",
+          "matched_pdf_pages": [
+            226,
+            237
+          ]
+        },
+        {
+          "pattern": "typhoon",
+          "matched_pdf_pages": [
+            166
+          ]
+        }
+      ],
+      "rationale": "与 N07 同义：只有恶劣天气交易机制，非明日香港天气预报。",
+      "expected_behavior": "说明报告不支持明日天气预测。",
+      "historical_retrieval": {
+        "actual_refused": true,
+        "ce_best_page": 70,
+        "ce_max": "-8.481"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N18",
+      "question": "推荐一部好看的电影吧。",
+      "legacy_category": "chinese-offtopic",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [
+        191
+      ],
+      "answer_support_pages": [],
+      "evidence": [
+        {
+          "pdf_page": 191,
+          "role": "context_only",
+          "excerpt": "the videos featured “classic scenes” of five iconic Hong Kong movies to explain the Cross-boundary WMC framework, investor eligibility and products offered in the Northbo"
+        }
+      ],
+      "full_text_searches": [
+        {
+          "pattern": "movie",
+          "matched_pdf_pages": [
+            191
+          ]
+        },
+        {
+          "pattern": "cinema",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "film",
+          "matched_pdf_pages": []
+        }
+      ],
+      "rationale": "与 N08 同类：宣传视频使用电影片段不构成电影推荐依据。",
+      "expected_behavior": "说明年报不能提供电影推荐。",
+      "historical_retrieval": {
+        "actual_refused": true,
+        "ce_best_page": 210,
+        "ce_max": "-8.108"
+      },
+      "generation_evaluated": false
+    },
+    {
+      "qid": "N19",
+      "question": "怎么做红烧肉？",
+      "legacy_category": "chinese-offtopic",
+      "legacy_expected_refuse": true,
+      "corpus_label": "insufficient",
+      "label_zh": "没有足够证据回答",
+      "scope": "HKMA Annual Report 2024 only; original question retained",
+      "reviewed_pdf_pages": [],
+      "answer_support_pages": [],
+      "evidence": [],
+      "full_text_searches": [
+        {
+          "pattern": "pork",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "brais",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "recipe",
+          "matched_pdf_pages": []
+        },
+        {
+          "pattern": "cook",
+          "matched_pdf_pages": []
+        }
+      ],
+      "rationale": "未检出红烧肉或烹饪步骤；没有支持页，不能伪造引用。",
+      "expected_behavior": "拒绝从年报编造食谱。",
+      "historical_retrieval": {
+        "actual_refused": true,
+        "ce_best_page": 210,
+        "ce_max": "-8.516"
+      },
+      "generation_evaluated": false
+    }
+  ]
+}

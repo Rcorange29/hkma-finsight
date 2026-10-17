@@ -3,3 +3,7 @@
 
 *.pdf binary
 *.sqlite3 binary
+
+# Preserve historical experiment bytes and their recorded SHA-256 fingerprints.
+validation/retrieval_per_question.csv -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+validation/threshold_per_question.csv -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

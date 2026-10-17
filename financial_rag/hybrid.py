@@ -47,6 +47,23 @@ STOPWORDS = frozenset(
     who whom why will with would you your
     """.split()
 )
+# Conversational/request verbs and politeness words. They are never a
+# discriminating financial term but occur frequently in the corpus, so a query
+# that contains only an out-of-corpus subject plus one of these ("give me a
+# recipe for chocolate cake") would otherwise get BM25 hits on the filler and
+# slip past the no-evidence refusal gate. Financial homographs such as "state",
+# "use", "list", "share", "return", "rate" or "report" are deliberately kept
+# out of this set.
+QUESTION_FILLER = frozenset(
+    """
+    please thanks thank give gives gave giving get gets got getting let lets allow
+    tell tells told ask asks asked show shows shown showing find finds found
+    make makes made take takes took want wants wanted need needs needed know knew
+    knows mention mentions describe describes explain explains provide provides
+    outline outlines summarise summarize detail details clarify may might must shall
+    """.split()
+)
+STOPWORDS = STOPWORDS | QUESTION_FILLER
 
 _FISCAL_YEAR = re.compile(r"\bfy\s?'?(\d{4}|\d{2})\b")
 # Comma-grouped numbers first, so "245,122" stays one token rather than "245" + "122"

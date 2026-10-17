@@ -57,6 +57,24 @@ def test_possessives_and_single_letters_drop():
     assert tokenize("the company's 10-K") == ["company", "10"]
 
 
+def test_request_filler_words_do_not_become_keyword_terms():
+    # A polite off-topic question must not get BM25 hits from common verbs that
+    # happen to appear in the corpus (e.g. pages that say "give"/"show").
+    toks = tokenize("please give me a recipe for chocolate cake")
+    for filler in ["please", "give", "me", "a", "for"]:
+        assert filler not in toks
+    # The real subject words are retained, so the cross-encoder/query can still
+    # decide there is no evidence.
+    assert toks == ["recipe", "chocolate", "cake"]
+
+
+def test_financial_homographs_are_not_treated_as_filler():
+    # Words that double as financial terms must stay searchable even though they
+    # can appear in questions as plain verbs/nouns.
+    for word in ["state", "use", "list", "share", "return", "rate", "report"]:
+        assert word in tokenize(word), word
+
+
 # ---------------------------------------------------------------------------
 # Query profile
 # ---------------------------------------------------------------------------

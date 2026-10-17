@@ -1,0 +1,61 @@
+{
+  "pdf_bytes": 43915243,
+  "pdf_sha256": "acc3cb3eb6d5289815355e84f7e27fec85bbcbaa7542e7a300f378967c367939",
+  "pdf_pages": 334,
+  "chunks": 343,
+  "source_files": [
+    "AR2024_E.pdf"
+  ],
+  "owners": [
+    "public"
+  ],
+  "companies": [
+    "Hong Kong Monetary Authority"
+  ],
+  "chunks_not_found_on_recorded_page_ignoring_whitespace": [],
+  "page_checks": {
+    "71": true,
+    "184": true,
+    "211": true,
+    "216": true
+  },
+  "salary_table_on_pdf_page_201": true,
+  "retrieval_rows": 30,
+  "csv_metrics_not_new_model_runs": {
+    "en": {
+      "bge_sem_recall5": 7,
+      "bge_sem_recall20": 10,
+      "bge_final_recall5": 9,
+      "multi_sem_recall5": 6,
+      "multi_sem_recall20": 7,
+      "multi_final_recall5": 9
+    },
+    "mixed": {
+      "bge_sem_recall5": 4,
+      "bge_sem_recall20": 5,
+      "bge_final_recall5": 5,
+      "multi_sem_recall5": 4,
+      "multi_sem_recall20": 4,
+      "multi_final_recall5": 5
+    },
+    "para": {
+      "bge_sem_recall5": 4,
+      "bge_sem_recall20": 4,
+      "bge_final_recall5": 4,
+      "multi_sem_recall5": 2,
+      "multi_sem_recall20": 2,
+      "multi_final_recall5": 4
+    },
+    "zh": {
+      "bge_sem_recall5": 2,
+      "bge_sem_recall20": 4,
+      "bge_final_recall5": 0,
+      "multi_sem_recall5": 5,
+      "multi_sem_recall20": 5,
+      "multi_final_recall5": 0
+    }
+  },
+  "threshold_rows": 34,
+  "admitted_negatives_using_original_unreliable_labels": 9,
+  "label_correction": "N14 is not an evidence-absent question: PDF p.201 Table 5 reports CEO pay components."
+}

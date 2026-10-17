@@ -19,7 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from financial_rag import analysis, config, financials, followup, ingest, rag, tracing
+from financial_rag import analysis, financials, followup, ingest, rag, tracing
 from financial_rag.ingest import PUBLIC_OWNER
 
 # The planner picks from the company-wide metrics only; a part of the company
@@ -314,12 +314,12 @@ def plan_question(question: str) -> QuestionPlan:
     Read a question into a plan. The model isn't shown the user's filings: given
     a list, it tended to fill in a company the question never named.
     """
-    from langchain_openai import ChatOpenAI
+    from financial_rag.llm import get_chat_llm
 
     metrics = "\n".join(
         f"- {m.key}: {m.name}. {m.description}" for m in PLANNER_METRICS.values()
     )
-    llm = ChatOpenAI(model=config.CHAT_MODEL, temperature=0).with_structured_output(QuestionPlan)
+    llm = get_chat_llm().with_structured_output(QuestionPlan)
     return llm.invoke([
         ("system", PLANNER_PROMPT.format(metrics=metrics)),
         ("human", question),

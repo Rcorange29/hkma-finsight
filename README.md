@@ -12,6 +12,16 @@ Built with LangChain, ChromaDB, OpenAI (`gpt-4o-mini` + `text-embedding-3-small`
 hybrid semantic + BM25 keyword search, two-stage reranking (cross-encoder, then
 gpt-4o-mini), FastAPI and Streamlit.
 
+> **HKMA FinSight extension.** This fork additionally imports the **Hong Kong
+> Monetary Authority (HKMA) Annual Reports** (the Exchange Fund accounts and
+> narrative), answers from them with the same page-cited, refuse-when-unsure
+> RAG pipeline, and defaults to a **local** embedding model (free, offline) and
+> **Doubao / Volcano Ark** as the OpenAI-compatible chat provider. The original
+> SEC 10-K pipeline and MIT licence are unchanged. See
+> [HKMA Annual Reports](#hkma-annual-reports-finsight) and
+> [Models: Doubao and local embeddings](#models-doubao-and-local-embeddings).
+
+
 ---
 
 ## Why it doesn't hallucinate numbers
@@ -50,12 +60,16 @@ for Activision Blizzard's goodwill, gpt-4o-mini was given "Goodwill 50,969" (p.9
 "$51.0 billion" (p.94), and answered "$51,969 million (p.92)" five times out of five: a
 blend of the two, cited to a page that holds neither. So `rag.check_answer` compares every
 text answer against its excerpts before it is returned:
-- every comma-grouped or decimal figure must be printed on the page cited right after it;
+- every numeric token (including integers and percentages) must be printed on the cited page;
+- question text is not evidence; non-abstaining answers require citations;
 - every citation must name a retrieved page.
 
 If the check fails, the model is asked once more with the problems spelled out. That
 fixed the goodwill answer to "$51.0 billion (p.94)". If the retry fails too, the answer
-carries a visible "Not verified against the excerpts" warning naming each problem.
+is withheld and replaced with a "Not found in context" refusal. Streaming drafts are
+buffered until this check completes. These are address and numeric-presence checks,
+**not semantic entailment verification**: a real number attached to the wrong claim
+can still pass. See [AUDIT_REPORT.md](AUDIT_REPORT.md) for tested limits.
 
 ---
 
@@ -98,6 +112,9 @@ relative paths.
 | `api.py` | FastAPI service — `POST /query`, `POST /documents` (upload), `POST /filings` (fetch by ticker and year), `GET /jobs/{id}`, `GET /documents`, `GET /financials`, `GET /usage`, `GET /health`. |
 | `usage.py` | Usage limits: questions and uploads per user per month, questions per minute, and a daily cap across all users. |
 | `edgar.py` | SEC EDGAR client: ticker and company lookup, filings, XBRL company facts; identified, rate-limited and cached. |
+| `hkma.py` | HKMA Annual Report client: discovers the year's combined PDF from the HKMA website, downloads it, and ingests it (page-cited, no SEC figure extraction). CLI: `python -m financial_rag.hkma --year 2024`. |
+| `llm.py` | Builds the chat model for every call (Doubao/Ark or OpenAI); raises a clear error only when an answer is attempted without a key. |
+| `embeddings.py` | Builds the embedding model: a local BGE sentence-transformer by default, or OpenAI's hosted model. |
 | `xbrl.py` | Checks each extracted figure against the company's XBRL data: matches are marked, contradictions dropped. |
 | `eval_xbrl.py` | Benchmark generated from XBRL for any tickers: fetches each latest 10-K, asks for reported and derived figures, scores against the SEC's values. |
 | `app.py` | Streamlit chat UI with expandable source citations and a sidebar for uploading PDFs. |
@@ -301,6 +318,125 @@ row on the same page that reports the shortfall in every year is added. A gap th
 single row fills, or that two rows could fill, is never filled. An overshoot (a wrong row
 mapped) leaves a negative gap, so a wrong mapping is still rejected.
 
+## HKMA Annual Reports (FinSight)
+
+The same engine can ingest the **Hong Kong Monetary Authority Annual Report**,
+published by the HKMA on its website
+(`https://www.hkma.gov.hk/eng/data-publications-and-research/publications/annual-report/<year>/`).
+Each year's report is one **combined PDF** of the whole document plus 23 numbered
+chapter PDFs. `hkma.py` discovers the combined PDF from the year's landing page
+rather than hard-coding its name — it changes by year (`AR2024_E.pdf` for 2024,
+`AR_2025E.pdf` for 2025): the combined file is the one PDF under that year's
+media folder that is **not** a numbered chapter (`01_Cover.pdf` … `23_BackCover.pdf`).
+
+```bash
+# Download a year's combined report and ingest it into ChromaDB (local embeddings):
+python -m financial_rag.hkma --year 2024
+python -m financial_rag.hkma --year 2024 --max-pages 40   # try the first pages first
+python -m financial_rag.hkma --year 2024 --download-only  # just save the PDF to data/
+```
+
+**Why the combined PDF.** Each chapter PDF restarts its own page numbering (the
+financial-statement chapter's first page is printed "310"), so stitching 23
+files would give ambiguous page numbers. The combined report is one continuous
+document, so the stored 0-based page maps directly to the page a PDF viewer
+opens to — which is what every citation uses.
+
+**What is reused, what is switched off.** Ingestion goes through the same
+`ingest.ingest_file` (table-aware chunking, hybrid retrieval, cross-encoder
+rerank, answer check and page citations). The chunks are tagged
+`company = "Hong Kong Monetary Authority"`. The SEC/10-K deterministic
+**figure engine is switched off** for these files (`extract_figures=False`):
+it models US three-statement filers, not the Exchange Fund accounts. HKMA
+answers therefore come from text retrieval with verbatim, page-cited evidence —
+no figures are computed or invented.
+
+**Page numbering caveat.** Citations are the **PDF page number** (the number to
+type in a PDF viewer). The 2024 combined PDF has two front-matter pages, so its
+printed page number is two lower (e.g. PDF p.184 shows printed "182"). Both
+point at the same physical page; the citation uses the PDF page so it opens
+directly. This matches the behaviour already noted for SEC citations below.
+
+**Refusal on weak evidence.** As with 10-Ks, a question with no passage above
+the relevance floor returns
+*"No relevant context found above the confidence threshold. The documents may
+not contain information about this question."* and no answer is generated.
+Refusal is enforced by two gates:
+
+1. **Candidate gate** — a chunk enters the pool only if its semantic score is
+   at least `SCORE_THRESHOLD` (local BGE default `0.35`, OpenAI default `0.10`)
+   or it is a BM25/keyword hit. Common conversational verbs and politeness
+   words ("give", "tell", "please", …) are stopwords, so a filler word that
+   merely appears in the corpus cannot create a false hit; financial
+   homographs ("state", "share", "return", …) are deliberately kept.
+2. **Cross-encoder floor** — after reranking, every candidate whose cross-encoder
+   score is below `RERANK_SCORE_FLOOR` (default `-2.0` on the raw logit) is
+   dropped unless it contains every number the question quotes. If nothing
+   survives, the question is refused.
+
+On the real 2024 report the separation is wide: answerable questions score
+roughly `+0.5` to `+9.2` on the cross-encoder, while clear off-topic questions
+("the weather today", "recommend a movie", a cake recipe, …) score about `-9`
+or worse. Both thresholds are environment-overridable. These are coarse topic filters, not
+answerability checks. The original negative labels were reviewed: CEO pay is supported on PDF p.201;
+headcount needs a date and staffing definition (pp.199–200). The current 19-case
+review has 1 sufficient, 3 partial, 14 insufficient and 1 ambiguous case.
+See [RETRIEVAL_VALIDATION.md](RETRIEVAL_VALIDATION.md); the old 9/19 rate is not
+a reliable accuracy metric.
+
+**Historical retrieval checks on the real 2024 report (334 pages, 343 chunks):**
+- "Exchange Fund investment return in 2024" → PDF p.184, which contains
+  "The Exchange Fund recorded investment income of HK$218.8 billion…".
+- "Who is the Chief Executive…?" → PDF p.71, which contains "Chief Executive…
+  Eddie YUE".
+- "Total assets … Statement of Changes in Equity" → PDF p.216.
+- An unrelated question ("a chocolate cake recipe") returns zero sources and
+  the refusal message, with no model call.
+
+These page checks were made by re-opening `data/AR2024_E.pdf` with a PDF reader
+and confirming the cited text on the cited page — they are evidence, not
+generated numbers.
+
+---
+
+## Models: Doubao and local embeddings
+
+Chat requests default to a 30-second timeout and one SDK retry (callers can override).
+Provider settings load `.env` before resolving values; exported variables take precedence.
+Ark uses only `ARK_API_KEY` / `ARK_BASE_URL`; OpenAI settings are separate.
+
+Everything language- and embedding-related is configured in `.env` (see
+`.env.example`) and built in one place by `llm.py` and `embeddings.py`.
+
+**Chat model.** The clients use the OpenAI-compatible interface, so they point
+at Volcano Ark (Doubao) or OpenAI by changing base URL, key and model:
+
+| Variable | Doubao (default) | OpenAI |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `doubao` | `openai` |
+| Base URL | `ARK_BASE_URL` (default `https://ark.cn-beijing.volces.com/api/v3`) | `OPENAI_BASE_URL` (unset → OpenAI) |
+| API key | `ARK_API_KEY` (no cross-provider fallback) | `OPENAI_API_KEY` |
+| Model | `CHAT_MODEL` (default `doubao-seed-2-1-pro-260628`; an `ep-…` endpoint id also works) | `CHAT_MODEL` (default `gpt-4o-mini`) |
+
+Create an Ark key at
+`https://console.volcengine.com/ark/region:ark+cn-beijing/apikey`.
+
+**Embeddings (free, local by default).** `EMBEDDING_PROVIDER=local` runs
+`BAAI/bge-small-en-v1.5` (384-dim, ~130 MB, downloaded once from Hugging Face).
+If your network cannot reach `huggingface.co`, set
+`HF_ENDPOINT=https://hf-mirror.com`. Set `EMBEDDING_PROVIDER=openai` to use the
+paid `text-embedding-3-small` (1536-dim) instead. **The two have different
+dimensions: switching provider requires rebuilding `chroma_db/`** (delete it
+and re-ingest).
+
+**What runs without a key.** Ingestion, hybrid retrieval, cross-encoder
+reranking and the refusal path are all local and make no paid call. With no
+chat key, `RERANKER` defaults to the local `cross-encoder`; only the final
+answer/rewrite/planner steps call a chat model and then raise a clear
+`LLMConfigError` (the API returns HTTP 503 and refunds the request).
+
+---
+
 ## Hybrid retrieval
 
 Financial questions are full of exact tokens: "fiscal 2024", "short-term unearned
@@ -431,7 +567,9 @@ Answers drawn from one filing say so under the answer ("Answered from acme-10k.p
 
 ## Quickstart
 
-**Requirements:** Python 3.10-3.12 and an OpenAI API key.
+**Requirements:** Python 3.10-3.12. A chat-model API key is only needed to
+**answer** questions: `ARK_API_KEY` for Doubao (the default) or
+`OPENAI_API_KEY` for OpenAI. Ingestion and retrieval run fully locally.
 
 > CI tests 3.11 and 3.12. The optional RAGAs evaluation (`evaluate.py`,
 > `requirements-ragas.txt`) needs 3.12 or older: `ragas` 0.2.x fails on 3.14's
@@ -445,7 +583,22 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-cp .env.example .env               # then edit .env and set your real key
+cp .env.example .env               # optional for ingest/retrieve; set ARK_API_KEY to answer
+```
+
+**HKMA (FinSight) quick start — fully local until you ask for an answer:**
+
+```bash
+# 1. Download and ingest the HKMA 2024 Annual Report (local BGE embeddings;
+#    first run downloads ~130 MB embedding + ~90 MB reranker models).
+python -m financial_rag.hkma --year 2024
+
+# 2. Ask a question from the command line (set ARK_API_KEY in .env for the
+#    final answer; without a key this prints the retrieval/refusal diagnostics).
+python -m financial_rag.rag "What was the Exchange Fund investment income in 2024?"
+
+# 3. Or boot the UI + API (see below):
+python start.py
 ```
 
 Get the sample filings: Microsoft's FY2024 and Apple's FY2025 10-Ks, as EDGAR serves them
@@ -730,13 +883,14 @@ Retrieval behaviour is tuned by the constants at the top of `rag.py`:
 | Constant | Default | Meaning |
 | --- | --- | --- |
 | `RETRIEVE_K` | `20` | Semantic candidates pulled from ChromaDB before filtering. |
-| `SCORE_THRESHOLD` | `0.10` | Minimum semantic relevance score; below this a semantic hit is discarded. |
+| `SCORE_THRESHOLD` | `0.35` local / `0.10` OpenAI | Minimum semantic relevance score; below this a semantic hit is discarded. Default follows the embedding provider; override with `SCORE_THRESHOLD`. |
+| `RERANK_SCORE_FLOOR` | `-2.0` | Minimum cross-encoder score (raw logit) for a chunk to survive reranking. If no chunk passes (and none is an exact-value match), the question is refused. Raise it to refuse more aggressively; set a very low number to disable. |
 | `KEYWORD_K` | `20` | BM25 candidates. |
 | `RERANK_CANDIDATES` | `30` | Fused candidates the cross-encoder scores. |
 | `TOP_K` | `5` | Chunks sent to the LLM after reranking. |
 | `HYBRID_SEARCH` | env, `1` | Set the `HYBRID_SEARCH` environment variable to `0` for semantic-only retrieval. |
 | `RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder used for the first reranking stage. |
-| `RERANKER` | env, `llm` | `llm` has gpt-4o-mini order the cross-encoder's top candidates; `cross-encoder` skips that call. |
+| `RERANKER` | env | `llm` has the chat model order the cross-encoder's top candidates; `cross-encoder` skips that call. Defaults to `llm` when a chat key is set, else the local `cross-encoder`. |
 | `LLM_RERANK_CANDIDATES` | `15` | How many of the cross-encoder's top candidates the LLM orders. |
 
 BM25 parameters, fusion weights and the tokenizer live in `hybrid.py`.
@@ -744,14 +898,19 @@ Chunking is configured in `ingest.py` (`CHUNK_SIZE`, `CHUNK_OVERLAP`). Changing 
 requires a re-ingest: `python start.py --reingest`.
 
 Model names live in `config.py`. Every language-model call uses `CHAT_MODEL`
-(`gpt-4o-mini` by default), which the environment variable of the same name overrides.
-To compare a model, run the benchmark with it:
-`CHAT_MODEL=<model> python -m financial_rag.eval_answers`. Add the model's prices to `PRICES` in
-`eval_answers.py` for a cost estimate. The embedding model is fixed, because changing it
-means re-ingesting.
+(Doubao `doubao-seed-2-1-pro-260628` by default, or `gpt-4o-mini` when
+`LLM_PROVIDER=openai`), which the environment variable of the same name
+overrides. To compare a model, run the benchmark with it:
+`CHAT_MODEL=<model> python -m financial_rag.eval_answers`. Add the model's
+prices to `PRICES` in `eval_answers.py` for a cost estimate. The embedding
+model is fixed for a given store, because changing it means re-ingesting.
 
-The only required environment variable is `OPENAI_API_KEY`, read from `.env`. The usage
-limits are optional variables in the same file (see [Usage limits](#usage-limits)).
+**No environment variable is required for ingestion or retrieval** (they run
+locally). A chat key is required only to answer: set `ARK_API_KEY` for Doubao
+(the default provider) or `OPENAI_API_KEY` for OpenAI (see
+[Models: Doubao and local embeddings](#models-doubao-and-local-embeddings)).
+The usage limits are optional variables in the same file (see
+[Usage limits](#usage-limits)).
 
 ### Tracing
 
@@ -842,7 +1001,7 @@ FY2024 10-K and Apple's FY2025 10-K, both loaded, so a question that names no co
 answered with both in play:
 - **correct:** every expected figure is in the answer, and nothing that mustn't be;
 - **route:** the expected engine answered;
-- **verified:** no "Not verified" warning;
+- **verified:** legacy metric meaning no "Not verified" marker; it does not establish factual support;
 - **cited:** the answer cites a page.
 
 The groups:
@@ -1131,6 +1290,15 @@ Tests cover:
 - which filing a question is about: company names from cover pages, matching a named
   company to a filing, narrowing both routes to it, the picked filing overriding the
   question, own files shadowing samples, and refusing filings the caller can't see.
+- HKMA import (`tests/test_hkma.py`, all offline): landing-page discovery of the
+  combined PDF for 2023/2024/2025 filenames, absolute/protocol-relative links,
+  missing/ambiguous combined-file errors, download caching and non-PDF rejection,
+  ingestion tagging chunks as "Hong Kong Monetary Authority" without SEC figures,
+  a verifiable PDF-page citation, and refusal with no evidence (no model call).
+- Model wiring (`tests/test_llm_embeddings.py`): Doubao/Ark base URL, key and model
+  are passed to the client; OpenAI has no custom base URL; a missing key raises
+  `LLMConfigError`; embeddings default to local BGE and switch to OpenAI when
+  configured; the local relevance gate defaults to 0.35.
 
 None need an API key or network access. The planner's routing on real questions is an
 opt-in test that calls OpenAI:
@@ -1172,6 +1340,13 @@ label, to keep it open. PRs that change workflow files are left to merge by hand
 - The vector store (`chroma_db/`) and source PDFs are gitignored — both are rebuilt
   locally from your own filings.
 - The reranker downloads a ~90 MB model from Hugging Face on first use.
+- **HKMA / local-first path.** With the default local BGE embeddings, ingestion
+  and retrieval are free and offline; only the answer step uses a chat model
+  (Doubao by default). The HKMA importer does not run the SEC three-statement
+  figure engine, so HKMA answers are text-retrieval answers with citations, not
+  computed figures. HKMA reports are downloaded from the HKMA website and are
+  © the Hong Kong Monetary Authority; the citation in every answer names the
+  official PDF file and its page.
 - Paths are relative, so run the scripts from the repository root.
 - Answers are generated from a limited set of retrieved excerpts. This is a demonstration
   project, not financial advice — verify any figure against the filing before relying on it.

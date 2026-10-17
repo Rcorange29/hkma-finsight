@@ -1,0 +1,13 @@
+{
+  "cases": 19,
+  "pdf_pages": 334,
+  "verified_excerpts": 28,
+  "verified_searches": 76,
+  "labels": {
+    "insufficient": 14,
+    "partial": 3,
+    "sufficient": 1,
+    "ambiguous": 1
+  },
+  "legacy_csvs_byte_unchanged": true
+}
