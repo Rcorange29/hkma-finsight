@@ -44,7 +44,55 @@ def _auth_configured() -> bool:
         return False
 
 
+class StreamFailed(Exception):
+    """A streamed answer ended with an error event (POST /query/stream)."""
+
+    def __init__(self, status: int, detail: str):
+        super().__init__(detail)
+        self.status, self.detail = status, detail
+
+
+def _ask(payload: dict) -> dict:
+    """
+    Ask the API, showing each step and the answer as it's written; returns the
+    checked answer as POST /query would. What was streamed is only a preview: the
+    final answer (after the check against the filing, and any correction) replaces it.
+    """
+    status = st.status("Reading the question …")
+    preview = st.empty()
+    streamed = ""
+    with httpx.stream("POST", f"{API_BASE_URL}/query/stream", json=payload, headers=HEADERS,
+                      timeout=120.0) as response:
+        if response.status_code >= 400:
+            response.read()             # so _error_detail can read the JSON detail
+            response.raise_for_status()
+        for line in response.iter_lines():
+            if not line:
+                continue
+            event = json.loads(line)
+            if event["type"] == "step":
+                status.update(label=f"{event['step']} …")
+            elif event["type"] == "token":
+                streamed += event["text"]
+                preview.markdown(_md(streamed) + " ▌")
+            elif event["type"] == "retry":
+                streamed = ""
+                preview.empty()
+                status.update(label="Correcting a figure the check flagged …")
+            elif event["type"] == "done":
+                preview.empty()
+                status.update(label="Answered", state="complete")
+                return event["response"]
+            elif event["type"] == "error":
+                preview.empty()
+                status.update(label="Couldn't answer", state="error")
+                raise StreamFailed(event["status"], event["detail"])
+    raise StreamFailed(502, "The answer stream ended early.")
+
+
 def _error_detail(exc: Exception) -> str:
+    if isinstance(exc, StreamFailed):
+        return exc.detail if exc.status in (401, 429) else f"API error ({exc.status}): {exc.detail}"
     if isinstance(exc, httpx.HTTPStatusError):
         try:
             detail = exc.response.json().get("detail", str(exc))
@@ -323,44 +371,36 @@ if question := st.chat_input("Ask a question about the financial reports …"):
 
     # Call the API
     with st.chat_message("assistant"):
-        with st.spinner("Retrieving relevant passages and generating answer …"):
-            try:
-                ask_about = st.session_state.get("ask_about", ALL_FILINGS)
-                response = httpx.post(
-                    f"{API_BASE_URL}/query",
-                    json={
-                        "question": question,
-                        "source_file": None if ask_about == ALL_FILINGS else ask_about,
-                        "history": history,
-                    },
-                    headers=HEADERS,
-                    timeout=60.0,
-                )
-                response.raise_for_status()
-                data = response.json()
-                answer = data["answer"]
-                sources = data.get("sources", [])
-                # "a.htm" or, for a comparison, "a.htm and b.htm"
-                filing = data.get("filing") or " and ".join(data.get("filings") or []) or None
-                interpreted = data.get("question") or question
-            except httpx.ConnectError:
-                answer = (
-                    "Could not connect to the API server. "
-                    "Make sure `uvicorn financial_rag.api:app --reload --port 8000` is running."
-                )
-                sources = []
-                filing = None
-                interpreted = question
-            except httpx.HTTPStatusError as exc:
-                answer = _error_detail(exc)
-                sources = []
-                filing = None
-                interpreted = question
-            except Exception as exc:
-                answer = f"Unexpected error: {exc}"
-                sources = []
-                filing = None
-                interpreted = question
+        try:
+            ask_about = st.session_state.get("ask_about", ALL_FILINGS)
+            data = _ask({
+                "question": question,
+                "source_file": None if ask_about == ALL_FILINGS else ask_about,
+                "history": history,
+            })
+            answer = data["answer"]
+            sources = data.get("sources", [])
+            # "a.htm" or, for a comparison, "a.htm and b.htm"
+            filing = data.get("filing") or " and ".join(data.get("filings") or []) or None
+            interpreted = data.get("question") or question
+        except httpx.ConnectError:
+            answer = (
+                "Could not connect to the API server. "
+                "Make sure `uvicorn financial_rag.api:app --reload --port 8000` is running."
+            )
+            sources = []
+            filing = None
+            interpreted = question
+        except (httpx.HTTPStatusError, StreamFailed) as exc:
+            answer = _error_detail(exc)
+            sources = []
+            filing = None
+            interpreted = question
+        except Exception as exc:
+            answer = f"Unexpected error: {exc}"
+            sources = []
+            filing = None
+            interpreted = question
 
         if interpreted != question:
             st.caption(_md(f"Read as: {interpreted}"))

@@ -21,11 +21,13 @@ _EXPORTER = InMemorySpanExporter()
 
 @pytest.fixture(scope="module", autouse=True)
 def provider():
-    """One SDK provider for the module: OpenTelemetry allows setting it only once."""
-    if not isinstance(trace.get_tracer_provider(), TracerProvider):
+    """Capture spans from the SDK provider, installing one if no test has yet:
+    OpenTelemetry allows setting the provider only once per process."""
+    sdk = trace.get_tracer_provider()
+    if not isinstance(sdk, TracerProvider):
         sdk = TracerProvider()
-        sdk.add_span_processor(SimpleSpanProcessor(_EXPORTER))
         trace.set_tracer_provider(sdk)
+    sdk.add_span_processor(SimpleSpanProcessor(_EXPORTER))
 
 
 @pytest.fixture

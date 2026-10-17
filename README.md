@@ -658,6 +658,30 @@ Status codes: `422` empty question · `404` `source_file` isn't one of the calle
 filings or a sample · `503` vector store missing (run `ingest.py` or upload a PDF) ·
 `500` inference error. `GET /health` returns `{"status": "ok"}`.
 
+`POST /query/stream` takes the same request and answers as it works, in newline-delimited
+JSON. The UI uses it, so a text answer shows each step and then its words as they're
+written, instead of seven silent seconds:
+
+```
+{"type": "step", "step": "Reading the question"}
+{"type": "step", "step": "Searching the filings"}
+{"type": "step", "step": "Ranking the passages"}
+{"type": "step", "step": "Writing the answer"}
+{"type": "token", "text": "Apple's independent auditor is"}
+…
+{"type": "step", "step": "Checking its figures against the filing"}
+{"type": "done", "response": {"answer": "…", "sources": […], …}}
+```
+
+- **Steps** come from the tracing spans as they start (`tracing.listening`), so they always
+  match what the pipeline is doing.
+- **Text is a preview.** If the check against the excerpts fails, a `{"type": "retry"}`
+  withdraws it and a corrected answer follows. `done` carries the checked answer, exactly as
+  `POST /query` returns it, and that's what the UI keeps.
+- **Errors after the stream starts** arrive as `{"type": "error", "status": 404, "detail":
+  "…"}`, and the question isn't counted. An empty question (`422`) and a usage limit
+  (`429`) are refused before anything streams.
+
 `POST /documents` — upload a PDF (multipart field `file`, max 50 MB)
 
 ```bash

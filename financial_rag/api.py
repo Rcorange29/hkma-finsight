@@ -2,6 +2,7 @@
 api.py — FastAPI server for the RAG engine.
 
   POST /query       ask a question about your filings and the public samples
+  POST /query/stream  the same, streamed: each step, then the answer as it's written
   POST /documents   upload a PDF; it is saved under data/users/<id>/ and ingested
   GET  /documents   list your filings and the public samples
   GET  /financials  the structured figures extracted from those filings
@@ -27,6 +28,8 @@ Usage:
 
 from __future__ import annotations
 
+import json
+import queue
 import re
 import tempfile
 import threading
@@ -35,7 +38,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from pypdf.errors import PdfReadError
 
@@ -230,13 +233,18 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/query", response_model=QueryResponse)
-def query_endpoint(request: QueryRequest, owner: str = Depends(current_owner)):
+def _counted(request: QueryRequest, owner: str) -> int | None:
+    """Refuse an empty question, then count it (429 over the limit)."""
     if not request.question.strip():
         raise HTTPException(status_code=422, detail="Question must not be empty.")
-    event = usage.record(owner, usage.QUESTION)
+    return usage.record(owner, usage.QUESTION)
+
+
+def _answer(request: QueryRequest, owner: str, event: int | None) -> router.Answer:
+    """router.answer for one counted request, failures as HTTP errors; refunds the
+    question if it couldn't be answered."""
     try:
-        result = router.answer(
+        return router.answer(
             request.question, owner, request.source_file,
             history=[(turn.role, turn.content) for turn in request.history],
         )
@@ -250,6 +258,81 @@ def query_endpoint(request: QueryRequest, owner: str = Depends(current_owner)):
         usage.refund(event)
         raise HTTPException(status_code=500, detail=f"Inference error: {exc}") from exc
 
+
+@app.post("/query", response_model=QueryResponse)
+def query_endpoint(request: QueryRequest, owner: str = Depends(current_owner)):
+    event = _counted(request, owner)
+    return _query_response(_answer(request, owner, event), request, owner)
+
+
+# Steps a streaming answer reports, by span name (tracing.py), as the user reads them
+STEP_LABELS = {
+    "rewrite_follow_up": "Reading the follow-up in context",
+    "plan": "Reading the question",
+    "calculate": "Calculating from the financial statements",
+    "retrieve": "Searching the filings",
+    "rerank.llm": "Ranking the passages",
+    "generate": "Writing the answer",
+    "check": "Checking its figures against the filing",
+}
+
+
+@app.post("/query/stream")
+def query_stream(request: QueryRequest, owner: str = Depends(current_owner)):
+    """
+    POST /query, answered as it's worked out: newline-delimited JSON events.
+
+      {"type": "step", "step": "Searching the filings"}   each step as it starts
+      {"type": "token", "text": "Microsoft's"}            a text answer as it's written
+      {"type": "retry"}                                   the excerpt check failed: drop
+                                                          the text so far, a corrected
+                                                          answer follows
+      {"type": "done", "response": {...}}                 the checked answer, as /query
+                                                          returns it: show this one
+      {"type": "error", "status": 503, "detail": "..."}   instead of done
+
+    An empty question is refused (422) and a usage limit reached (429) before
+    anything streams, as in /query.
+    """
+    event = _counted(request, owner)
+    events: queue.Queue = queue.Queue()
+    last_step = ""
+
+    def listener(kind: str, value: str) -> None:
+        nonlocal last_step
+        if kind == "step":
+            label = STEP_LABELS.get(value)
+            if label and label != last_step:    # a comparison searches each filing
+                last_step = label
+                events.put({"type": "step", "step": label})
+        elif kind == "token":
+            events.put({"type": "token", "text": value})
+        elif kind == "retry":
+            events.put({"type": "retry"})
+
+    def work() -> None:
+        try:
+            with tracing.listening(listener):
+                result = _answer(request, owner, event)
+            response = _query_response(result, request, owner)
+            events.put({"type": "done", "response": response.model_dump(mode="json")})
+        except HTTPException as exc:
+            events.put({"type": "error", "status": exc.status_code, "detail": exc.detail})
+        except Exception as exc:
+            events.put({"type": "error", "status": 500, "detail": f"Inference error: {exc}"})
+        finally:
+            events.put(None)
+
+    threading.Thread(target=work, daemon=True).start()
+
+    def stream():
+        while (item := events.get()) is not None:
+            yield json.dumps(item) + "\n"
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+def _query_response(result: router.Answer, request: QueryRequest, owner: str) -> QueryResponse:
     calculations = [
         Calculation(
             metric=s.metric.key, name=s.metric.name, source_file=r.source_file,
