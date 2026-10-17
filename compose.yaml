@@ -67,6 +67,18 @@ services:
     depends_on:
       - ui
 
+  # Optional trace store and viewer for tracing.py, excluded from `up` by its profile.
+  # Start it with `docker compose --profile tracing up -d` and set
+  # OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318 in .env. Traces are kept in
+  # memory (capped, so it can't starve the app) and the UI listens on the host's
+  # loopback only: `ssh -L 16686:localhost:16686 <host>`, then http://localhost:16686.
+  jaeger:
+    profiles: ["tracing"]
+    image: jaegertracing/jaeger:2.11.0
+    ports:
+      - "127.0.0.1:16686:16686"
+    mem_limit: 300m
+
   # One-shot job, excluded from `docker compose up` by its profile.
   # PDFs are bind-mounted read-only from ./data on the host.
   ingest:

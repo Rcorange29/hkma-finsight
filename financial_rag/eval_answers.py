@@ -38,7 +38,7 @@ from pathlib import Path
 
 from langchain_core.callbacks import get_usage_metadata_callback
 
-from financial_rag import config, router
+from financial_rag import config, router, tracing
 
 # A page citation from a PDF or an EDGAR HTML filing: (apple-sec-10k.htm, p.31)
 _CITATION = re.compile(r"\.(?:pdf|html?), p\.")
@@ -262,8 +262,15 @@ def _cost_line(rows: list[dict]) -> str:
             f"(total ${sum(r['usd'] for r in rows):.3f}; embeddings not counted)")
 
 
+# The steps reported, in pipeline order (tracing.py names them)
+STEPS = ["answer", "rewrite_follow_up", "plan", "calculate", "text_answer", "retrieve",
+         "search.semantic", "search.keyword", "rerank.cross_encoder", "rerank.llm",
+         "generate", "check"]
+
+
 def main() -> None:
     print(f"Model: {config.CHAT_MODEL}\n")
+    spans = tracing.collect()
     rows = []
     for case in CASES:
         row = run(case)
@@ -278,6 +285,10 @@ def main() -> None:
     print(f"\nper question: median {statistics.median(r['seconds'] for r in rows):.1f} s, "
           f"median {statistics.median(r['tokens_in'] for r in rows):,.0f} input tokens, "
           + _cost_line(rows))
+    timings = tracing.step_timings(spans.get_finished_spans())
+    print("median time per step: " + ", ".join(
+        f"{step} {timings[step][1]:.2f} s (x{timings[step][0]})"
+        for step in STEPS if step in timings))
     failures = [r for r in rows if not (r["correct"] and r["route_ok"] and r["verified"]
                                         and r["cited"])]
     for r in failures:

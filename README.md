@@ -729,6 +729,36 @@ means re-ingesting.
 The only required environment variable is `OPENAI_API_KEY`, read from `.env`. The usage
 limits are optional variables in the same file (see [Usage limits](#usage-limits)).
 
+### Tracing
+
+Every question gets an OpenTelemetry trace (`tracing.py`), with one span per step:
+`answer`, then `rewrite_follow_up`, `plan`, and either `calculate` or `text_answer`. A
+text answer breaks down further into `retrieve` (`search.semantic`, `search.keyword`,
+`rerank.cross_encoder`, `rerank.llm`), `generate` and `check`. Uploads and fetches are
+traced too: `fetch_10k`, `ingest`, `extract_figures` and `xbrl_check`.
+
+Tracing is off unless configured, and the traces stay on your own machines:
+- `OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318` in `.env` sends traces over OTLP/HTTP
+  to a collector you run. `compose.yaml` has one: `docker compose --profile tracing up
+  -d` starts Jaeger, capped at 300 MB of memory, with its UI on the host's loopback
+  only. On a server, reach it with `ssh -L 16686:localhost:16686 <host>`, then
+  http://localhost:16686.
+- `TRACE_CONSOLE=1` prints the spans to the log instead.
+
+Spans record timings, routes, metric keys, counts and file names. They never record
+the question, the answer or who asked.
+
+`eval_answers.py` collects its spans in memory and reports the median time per step:
+
+```
+median time per step: answer 1.08 s (x51), plan 0.96 s (x51), calculate 0.00 s (x35),
+text_answer 6.74 s (x16), retrieve 5.63 s (x17), search.semantic 0.35 s (x17),
+rerank.cross_encoder 4.15 s (x17), rerank.llm 1.02 s (x17), generate 1.15 s (x16), …
+```
+
+On a laptop CPU, the cross-encoder scoring 30 candidates is most of a text answer's
+time.
+
 ---
 
 ## Evaluation

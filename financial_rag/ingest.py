@@ -44,6 +44,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from financial_rag import config, financials, html_filing
+from financial_rag.tracing import note, traced
 
 load_dotenv()
 
@@ -195,6 +196,7 @@ def open_vectorstore() -> Chroma:
     )
 
 
+@traced("ingest")
 def ingest_file(
     pdf_path: Path, owner: str = PUBLIC_OWNER, max_pages: int | None = None,
     cik: int | None = None,
@@ -249,6 +251,7 @@ def ingest_file(
         financials.extract_and_store(pages, pdf_path.name, owner, company, cik)
     except Exception as exc:
         print(f"Warning: financial figure extraction failed for {pdf_path.name}: {exc}")
+    note(source_file=pdf_path.name, pages=len(docs), chunks=len(chunks))
     return len(chunks)
 
 

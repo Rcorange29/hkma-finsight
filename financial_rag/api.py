@@ -39,7 +39,18 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pypdf.errors import PdfReadError
 
-from financial_rag import analysis, auth, edgar, financials, ingest, jobs, router, usage, xbrl
+from financial_rag import (
+    analysis,
+    auth,
+    edgar,
+    financials,
+    ingest,
+    jobs,
+    router,
+    tracing,
+    usage,
+    xbrl,
+)
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # a 10-K PDF is typically 1-10 MB
 MAX_UPLOAD_PAGES = 500                # most 10-Ks run 80-300 pages
@@ -51,6 +62,9 @@ _OWNER_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
 # Serialises store writes: two uploads of the same filename must not interleave
 # their delete-then-add, or both sets of chunks survive.
 _ingest_lock = threading.Lock()
+
+# Traces go to the OTLP collector named in the environment, if any (tracing.py)
+tracing.setup()
 
 app = FastAPI(
     title="Financial Report Q&A Engine",
@@ -389,9 +403,11 @@ def _annual_report(ticker: str, cik: int, fiscal_year: int | None) -> edgar.Fili
                      "lists about the last ten years.")
 
 
+@tracing.traced("fetch_10k")
 def _fetch_and_ingest(ticker: str, cik: int, owner: str, step,
                       fiscal_year: int | None = None) -> str:
     """The job: find the 10-K, download it, then index it like an upload."""
+    tracing.note(ticker=ticker, fiscal_year=fiscal_year)
     which = f"10-K for fiscal {fiscal_year}" if fiscal_year else "latest 10-K"
     step(f"Finding the {which} on SEC EDGAR …")
     filing = _annual_report(ticker, cik, fiscal_year)

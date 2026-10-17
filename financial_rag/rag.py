@@ -39,7 +39,7 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import BaseModel, Field
 
-from financial_rag import config, hybrid
+from financial_rag import config, hybrid, tracing
 from financial_rag.financials import page_number
 from financial_rag.ingest import PUBLIC_OWNER
 
@@ -282,13 +282,21 @@ def answer_checked(question: str, docs: list) -> str:
     problems spelled out. If the retry fails the check too, the answer goes out
     with a warning naming what couldn't be verified, rather than as if it were.
     """
-    answer = _answer_with_docs(question, docs)
-    problems = check_answer(answer, question, docs)
+    with tracing.tracer.start_as_current_span("generate"):
+        tracing.note(attempt=1, excerpts=len(docs))
+        answer = _answer_with_docs(question, docs)
+    with tracing.tracer.start_as_current_span("check"):
+        problems = check_answer(answer, question, docs)
+        tracing.note(problems=len(problems))
     if not problems:
         return answer
     print(f"Answer failed the excerpt check, retrying: {problems}")
-    answer = _answer_with_docs(question, docs, problems)
-    problems = check_answer(answer, question, docs)
+    with tracing.tracer.start_as_current_span("generate"):
+        tracing.note(attempt=2, excerpts=len(docs))
+        answer = _answer_with_docs(question, docs, problems)
+    with tracing.tracer.start_as_current_span("check"):
+        problems = check_answer(answer, question, docs)
+        tracing.note(problems=len(problems), unverified=bool(problems))
     if problems:
         answer += (
             "\n\n⚠️ Not verified against the excerpts: " + "; ".join(problems)
@@ -421,6 +429,7 @@ def _keyword_search(profile: hybrid.QueryProfile, vectorstore: Chroma, scope: Sc
     ]
 
 
+@tracing.traced("retrieve")
 def retrieve_and_rerank(
     question: str,
     vectorstore: Chroma,
@@ -447,11 +456,18 @@ def retrieve_and_rerank(
     scope = Scope(owner, filing)
 
     # Semantic retrieval with relevance scores (0 = dissimilar, 1 = identical)
-    scored = vectorstore.similarity_search_with_relevance_scores(
-        question, k=RETRIEVE_K, filter=scope.where()
-    )
-    semantic = [(doc, score) for doc, score in scored if score >= SCORE_THRESHOLD]
-    lexical = _keyword_search(profile, vectorstore, scope) if keyword else []
+    with tracing.tracer.start_as_current_span("search.semantic"):
+        scored = vectorstore.similarity_search_with_relevance_scores(
+            question, k=RETRIEVE_K, filter=scope.where()
+        )
+        semantic = [(doc, score) for doc, score in scored if score >= SCORE_THRESHOLD]
+        tracing.note(candidates=len(scored), above_threshold=len(semantic))
+    if keyword:
+        with tracing.tracer.start_as_current_span("search.keyword"):
+            lexical = _keyword_search(profile, vectorstore, scope)
+            tracing.note(hits=len(lexical))
+    else:
+        lexical = []
 
     docs: dict[str, Document] = {}
     trace: dict[str, dict] = {}
@@ -484,7 +500,10 @@ def retrieve_and_rerank(
     # value the question quotes outranks one that doesn't, whatever the model says
     cross_encoder = _get_reranker()
     candidates = [cid for cid, _ in fused]
-    ce_scores = cross_encoder.predict([(question, docs[cid].page_content) for cid in candidates])
+    with tracing.tracer.start_as_current_span("rerank.cross_encoder"):
+        ce_scores = cross_encoder.predict(
+            [(question, docs[cid].page_content) for cid in candidates])
+        tracing.note(candidates=len(candidates))
     exact = {
         cid: keyword and hybrid.has_amounts(profile, hybrid.index_text(docs[cid].page_content))
         for cid in candidates
@@ -498,7 +517,9 @@ def retrieve_and_rerank(
     if reranker == "llm" and len(ranked) > 1:
         head = ranked[:LLM_RERANK_CANDIDATES]
         try:
-            order = [head[i] for i in llm_rank(question, [docs[cid] for cid in head])]
+            with tracing.tracer.start_as_current_span("rerank.llm"):
+                tracing.note(candidates=len(head))
+                order = [head[i] for i in llm_rank(question, [docs[cid] for cid in head])]
         except Exception as exc:
             print(f"LLM reranking failed, using the cross-encoder order: {exc}")
         else:
@@ -517,6 +538,7 @@ def retrieve_and_rerank(
             info["exact_value_match"] = True
         out.append(Document(id=doc.id, page_content=doc.page_content,
                             metadata={**doc.metadata, "retrieval": info}))
+    tracing.note(reranker=used, returned=len(out), scoped_to_filing=filing is not None)
     return out
 
 
@@ -530,6 +552,7 @@ def per_filing_k(count: int) -> int:
     return max(2, -(-(TOP_K + 1) // count))
 
 
+@tracing.traced("text_answer")
 def query(
     question: str, owner: str | None = None, filing: tuple[str, str] | None = None,
     filings: list[tuple[str, str]] | None = None,
@@ -549,6 +572,7 @@ def query(
                                                    top_k=k)]
     else:
         top_docs = retrieve_and_rerank(question, vectorstore, owner, filing=filing)
+    tracing.note(filings=len(filings) if filings else int(filing is not None), excerpts=len(top_docs))
 
     if not top_docs:
         return RAGResponse(
