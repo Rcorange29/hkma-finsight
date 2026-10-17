@@ -1,0 +1,94 @@
+name: Nightly eval
+
+# Scores the pipeline end to end against the real models, so a regression from
+# a dependency, a model update or a merged change shows up the next morning:
+# - every night, eval_answers.py on the two sample 10-Ks (about $0.08 a run);
+# - on Sundays, eval_xbrl.py on its ten companies as well (about $0.40).
+# Each benchmark stops at its --max-cost cap and fails below its --min-score, so
+# a failed run (GitHub emails the person who last edited this schedule) means a
+# drop in quality or an overspend. Scores and the time per step go to the run's
+# summary; the full results are kept as an artifact for two weeks.
+#
+# Needs two repository secrets: OPENAI_API_KEY, and SEC_USER_AGENT
+# ("financial-rag <contact email>", which the SEC requires of automated requests).
+
+on:
+  schedule:
+    - cron: "30 18 * * 1-6"   # 00:00 IST, Monday to Saturday: answers
+    - cron: "30 18 * * 0"     # 00:00 IST on Sunday night: answers and XBRL
+  workflow_dispatch:
+    inputs:
+      xbrl:
+        description: "Also run the XBRL benchmark (about $0.40)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-eval
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    name: Benchmarks
+    # Forks don't run it: it spends the owner's OpenAI credit
+    if: github.repository == 'dasosis/financial-rag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+    steps:
+      - name: Check the secrets are set
+        run: |
+          test -n "$OPENAI_API_KEY" || { echo "::error::Add the OPENAI_API_KEY repository secret."; exit 1; }
+          test -n "$SEC_USER_AGENT" || { echo "::error::Add the SEC_USER_AGENT repository secret."; exit 1; }
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # CPU-only torch keeps the CUDA wheels (~2 GB) off the runner.
+      - name: Install dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Cache the reranker model
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('financial_rag/config.py') }}
+
+      - name: Fetch and index the sample 10-Ks
+        run: python -m financial_rag.ingest --fetch-samples
+
+      - name: Answers benchmark
+        run: >
+          python -m financial_rag.eval_answers
+          --max-cost 0.25 --min-score 0.94 --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: XBRL benchmark
+        if: >
+          (success() || failure())
+          && (github.event.schedule == '30 18 * * 0' || inputs.xbrl)
+        run: >
+          python -m financial_rag.eval_xbrl
+          --max-cost 1.00 --min-score 0.97 --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-results-${{ github.run_id }}
+          path: |
+            answer_eval_results.json
+            chroma_db/eval_xbrl/results.json
+          if-no-files-found: ignore
+          retention-days: 14

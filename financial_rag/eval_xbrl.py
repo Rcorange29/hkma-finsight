@@ -49,8 +49,9 @@ from decimal import Decimal
 from pathlib import Path
 
 from dotenv import load_dotenv
+from langchain_core.callbacks import get_usage_metadata_callback
 
-from financial_rag import analysis, edgar, financials, ingest, rag, router, xbrl
+from financial_rag import analysis, edgar, eval_answers, financials, ingest, rag, router, xbrl
 
 load_dotenv()
 
@@ -212,21 +213,40 @@ def run(case: Case) -> dict:
     }
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+def _options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("tickers", nargs="*", default=DEFAULT_TICKERS)
     parser.add_argument("--refresh", action="store_true", help="re-fetch and re-index")
     parser.add_argument("--history", type=int, default=1, metavar="N",
                         help="index each ticker's latest N 10-Ks and ask about every year")
-    args = parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = eval_answers.benchmark_args(__doc__.split("\n\n")[0].strip(), argv, _options)
     use_store(STORE)
+    budget = eval_answers.Budget(args.max_cost)
+
+    def charged(work, *work_args):
+        """Run `work`, charging its chat-model calls (figure extraction too) to the budget."""
+        with get_usage_metadata_callback() as usage:
+            out = work(*work_args)
+        budget.charge(eval_answers.usage_cost(usage.usage_metadata)[2])
+        return out
 
     rows = []
+    total = 0
+    stopped = False
     for ticker in (t.upper() for t in args.tickers):
-        name, cases = prepare(ticker, args.refresh, args.history)
+        if budget.exhausted:
+            stopped = True
+            break
+        name, cases = charged(prepare, ticker, args.refresh, args.history)
+        total += len(cases)
         print(f"{ticker}: {name}, {len(cases)} questions", flush=True)
         for case in cases:
-            row = run(case)
+            if budget.exhausted:
+                stopped = True
+                break
+            row = charged(run, case)
             rows.append(row)
             mark = "ok  " if row["correct"] and row["route_ok"] else "FAIL"
             print(f"  {mark} {case.metric:<20} expected {case.expected}", flush=True)
@@ -244,6 +264,23 @@ def main(argv: list[str] | None = None) -> None:
     out.write_text(json.dumps(rows, indent=2), encoding="utf-8")
     print(f"\nResults written to {out}")
 
+    full = lambda r: r["correct"] and r["route_ok"] and r["cited"]  # noqa: E731
+    ok = sum(full(r) for r in rows)
+    summary = [f"### XBRL benchmark: {ok}/{total} passed",
+               f"estimated chat-model spend ${budget.spent:.3f} (indexing included; "
+               "embeddings not counted)", "",
+               "| company | questions | correct | route | cited |", "| --- | --- | --- | --- | --- |"]
+    for ticker in dict.fromkeys(r["ticker"] for r in rows):
+        group = [r for r in rows if r["ticker"] == ticker]
+        counts = [sum(r[key] for r in group) for key in ("correct", "route_ok", "cited")]
+        summary.append(f"| {ticker} | {len(group)} | " + " | ".join(map(str, counts)) + " |")
+    misses = [r for r in rows if not full(r)]
+    if misses:
+        summary += ["", "Not passed:"] + [f"- {r['question']} (expected {r['expected']})"
+                                          for r in misses]
+    eval_answers.write_summary(args.summary, summary)
+    return eval_answers.finish(ok, total, stopped, budget, args.min_score, "eval_xbrl")
+
 
 def _summary(rows: list[dict]) -> str:
     n = len(rows)
@@ -253,4 +290,4 @@ def _summary(rows: list[dict]) -> str:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
