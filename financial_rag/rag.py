@@ -216,7 +216,8 @@ def _answer_with_docs(question: str, docs: list, problems: list[str] | None = No
 # decimals ("50,969", "11.80", "$10.3 billion"). Bare integers (years, "16%")
 # aren't checked.
 _ANSWER_FIGURE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+")
-_CITATION = re.compile(r"\(([^()]+?\.pdf),\s*p\.?\s*(\d+)\)", re.IGNORECASE)
+# "(msft.pdf, p.90)", or an EDGAR HTML filing's "(microsoft-sec-10k.htm, p. 58)"
+_CITATION = re.compile(r"\(([^()]+?\.(?:pdf|html?)),\s*p\.?\s*(\d+)\)", re.IGNORECASE)
 
 
 def _numbers(text: str) -> set[str]:
@@ -229,7 +230,7 @@ def check_answer(answer: str, question: str, docs: list) -> list[str]:
     What in a text answer isn't backed by the excerpts it was written from.
     Empty when everything checks out.
 
-    - Each "(file.pdf, p.N)" must name a retrieved excerpt, and every figure in
+    - Each "(file.pdf, p.N)" or "(file.htm, p.N)" must name a retrieved excerpt, and every figure in
       the text before it (back to the previous citation) must be printed on that
       page or in the question.
     - Figures with no citation after them must be printed in some excerpt.

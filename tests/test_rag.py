@@ -94,6 +94,33 @@ def test_a_citation_of_a_page_that_wasnt_retrieved_is_caught():
     assert problems == ["(msft.pdf, p.12) isn't the source of any excerpt"]
 
 
+# The samples are EDGAR HTML 10-Ks: their citations must be checked the same way.
+# Until this was caught, "(…htm, p.N)" wasn't recognised as a citation at all, so a
+# wrong page or a page never retrieved went unnoticed.
+HTML_DOCS = [
+    Document(page_content="Short-term unearned revenue 57,582 50,901", metadata={
+        "source_file": "microsoft-sec-10k.htm", "page": 57}),
+    Document(page_content="Goodwill 50,969", metadata={
+        "source_file": "microsoft-sec-10k.htm", "page": 75}),
+]
+
+
+@pytest.mark.parametrize(
+    ("answer", "problems"),
+    [
+        ("It was $57,582 million (microsoft-sec-10k.htm, p. 58).", []),
+        ("It was $57,582 million (microsoft-sec-10k.htm, p.76).",
+         ["57,582 isn't printed on microsoft-sec-10k.htm p.76"]),
+        ("It was $57,582 million (microsoft-sec-10k.htm, p.3).",
+         ["(microsoft-sec-10k.htm, p.3) isn't the source of any excerpt"]),
+        ("Goodwill was $50,969 million (MICROSOFT-SEC-10K.HTML, p.76).",
+         ["(MICROSOFT-SEC-10K.HTML, p.76) isn't the source of any excerpt"]),
+    ],
+)
+def test_html_filing_citations_are_checked(answer, problems):
+    assert rag.check_answer(answer, "q", HTML_DOCS) == problems
+
+
 def test_figures_from_the_question_and_uncited_figures_in_excerpts_pass():
     assert rag.check_answer("Yes, 57,582 is not in these pages.", "Where is 57,582?", DOCS) == []
     assert rag.check_answer("Goodwill was 50,969.", "q", DOCS) == []
