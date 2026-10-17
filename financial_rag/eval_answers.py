@@ -187,6 +187,11 @@ CASES = [
          "Microsoft?", ["$112,010 million", "$88,136 million"], "calculation"),
     Case("comparison", "Who are Apple's and Microsoft's independent auditors?",
          ["Ernst & Young", "Deloitte"], "text"),
+    # A question about what each filing says: summarised from both, each cited,
+    # where the figures-only prompt answered "not found in context"
+    Case("comparison", "How do Apple's and Microsoft's AI risks differ?",
+         ["(apple-sec-10k.htm, p.", "(microsoft-sec-10k.htm, p."], "text",
+         absent=["not found in context"]),
     Case("comparison", "Compare Microsoft's and Tesla's revenue",
          ["$245,122 million", "No filing for Tesla"], "calculation"),
     # Nothing to answer from: must say so, not answer with another filing's figures
