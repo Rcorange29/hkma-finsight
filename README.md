@@ -270,6 +270,26 @@ official source for local research use.
 - Extend the reviewed corpus to additional HKMA annual reports
 - Verify provider-specific generation with a documented, cost-controlled protocol
 
+## Data sources and terms
+
+- **Software.** The project's software is released under the MIT License. The
+  authoritative license text is the bundled [`LICENSE`](LICENSE) file, which
+  retains the original copyright notice; that local file — not any third-party
+  hosted copy — is the license of record.
+- **Report data.** The importer downloads the official combined **HKMA Annual
+  Report 2024** PDF directly from the HKMA publications page
+  (<https://www.hkma.gov.hk/eng/data-publications-and-research/publications/annual-report/2024/>).
+  The PDF is fetched at runtime for local research use and is **not** committed
+  to the repository.
+- **Official APIs.** HKMA's official public data APIs are documented at
+  <https://apidocs.hkma.gov.hk/>. The current importer does not call those APIs
+  (it retrieves the annual-report PDF); they are the authoritative source for
+  structured HKMA data and should be used for any data obtained via API.
+- **Data use.** HKMA financial data remains the property of the Hong Kong
+  Monetary Authority and is subject to the applicable HKMA website/data-use
+  terms. Review those terms before redistributing downloaded material, and cite
+  the official HKMA source in any output.
+
 ## Attribution and license
 
 HKMA FinSight adapts Soumya Snigdha Das's open-source
@@ -279,4 +299,5 @@ the HKMA importer, local-provider configuration, evidence review, and targeted
 reliability work form the portfolio adaptation.
 
 The project remains available under the original [MIT License](LICENSE), including
-the original copyright notice.
+the original copyright notice. HKMA data is sourced from the official HKMA website
+and APIs described above and remains subject to HKMA's data-use terms.
