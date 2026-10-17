@@ -49,6 +49,11 @@ CASES = {
         ("text", None, None, None),
     "How many diluted shares did Apple have in fiscal 2025?":
         ("calculation", {"diluted_shares"}, [2025], None),
+    # Planned as share_repurchases (cash spent) 2 times in 8 before its example
+    "How much was left in the share repurchase program at June 30, 2024?":
+        ("text", None, None, None),
+    "How much did Microsoft spend repurchasing shares in fiscal 2024?":
+        ("calculation", {"share_repurchases"}, [2024], None),
 }
 
 
